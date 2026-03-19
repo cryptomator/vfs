@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <annotationProcessing>
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <module name="vfs-api" />
+        <module name="vfs-common" />
+        <module name="vfs-test" />
+      </profile>
+    </annotationProcessing>
+    <bytecodeTargetLevel>
+      <module name="vfs-crypto-decorator" target="25" />
+      <module name="vfs-crypto-middleware" target="25" />
+      <module name="vfs-fuse" target="25" />
+      <module name="vfs-nio" target="25" />
+      <module name="vfs-webdav" target="25" />
+    </bytecodeTargetLevel>
+  </component>
+</project>

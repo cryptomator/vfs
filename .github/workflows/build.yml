@@ -1,0 +1,265 @@
+name: Build
+on:
+  push:
+    tags:
+      - '*'
+    branches-ignore:
+      - 'dependabot/**'
+  pull_request_target:
+    types: [labeled]
+
+env:
+  JAVA_DIST: 'temurin'
+  JAVA_VERSION: '25'
+
+jobs:
+  frontend-fuse:
+    name: Verify vfs-frontend-fuse
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Verify reactor
+        run: >
+          ./mvnw -B clean verify --also-make --projects vfs-frontend-fuse --no-transfer-progress
+      - name: Prepare coverage artifact
+        run: |
+          mkdir -p coverage/vfs-frontend-fuse/vfs-api coverage/vfs-frontend-fuse/vfs-common coverage/vfs-frontend-fuse/vfs-frontend-fuse
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-frontend-fuse/vfs-api/jacoco.xml
+          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-frontend-fuse/vfs-common/jacoco.xml
+          test ! -f vfs-frontend-fuse/target/site/jacoco/jacoco.xml || cp vfs-frontend-fuse/target/site/jacoco/jacoco.xml coverage/vfs-frontend-fuse/vfs-frontend-fuse/jacoco.xml
+          touch coverage/vfs-frontend-fuse/.keep
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-vfs-frontend-fuse
+          path: coverage/vfs-frontend-fuse
+          if-no-files-found: error
+
+  frontend-webdav:
+    name: Verify vfs-frontend-webdav
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Verify reactor
+        run: >
+          ./mvnw -B clean verify --also-make --projects vfs-frontend-webdav --no-transfer-progress
+      - name: Prepare coverage artifact
+        run: |
+          mkdir -p coverage/vfs-frontend-webdav/vfs-api coverage/vfs-frontend-webdav/vfs-common coverage/vfs-frontend-webdav/vfs-frontend-webdav
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-frontend-webdav/vfs-api/jacoco.xml
+          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-frontend-webdav/vfs-common/jacoco.xml
+          test ! -f vfs-frontend-webdav/target/site/jacoco/jacoco.xml || cp vfs-frontend-webdav/target/site/jacoco/jacoco.xml coverage/vfs-frontend-webdav/vfs-frontend-webdav/jacoco.xml
+          touch coverage/vfs-frontend-webdav/.keep
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-vfs-frontend-webdav
+          path: coverage/vfs-frontend-webdav
+          if-no-files-found: error
+
+  middleware-crypto:
+    name: Verify vfs-middleware-crypto
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Verify reactor
+        run: >
+          ./mvnw -B clean verify --also-make --projects vfs-middleware-crypto --no-transfer-progress
+      - name: Prepare coverage artifact
+        run: |
+          mkdir -p coverage/vfs-middleware-crypto/vfs-api coverage/vfs-middleware-crypto/vfs-common coverage/vfs-middleware-crypto/vfs-middleware-crypto
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-crypto/vfs-api/jacoco.xml
+          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-middleware-crypto/vfs-common/jacoco.xml
+          test ! -f vfs-middleware-crypto/target/site/jacoco/jacoco.xml || cp vfs-middleware-crypto/target/site/jacoco/jacoco.xml coverage/vfs-middleware-crypto/vfs-middleware-crypto/jacoco.xml
+          touch coverage/vfs-middleware-crypto/.keep
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-vfs-middleware-crypto
+          path: coverage/vfs-middleware-crypto
+          if-no-files-found: error
+
+  sonarcloud:
+    name: Run SonarCloud Analysis
+    needs: [frontend-fuse, frontend-webdav, middleware-crypto]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # deep fetch for better sonarcloud analysis
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Cache SonarCloud packages
+        uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5.0.2
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: coverage-vfs-frontend-fuse
+          path: coverage/vfs-frontend-fuse
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: coverage-vfs-frontend-webdav
+          path: coverage/vfs-frontend-webdav
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: coverage-vfs-middleware-crypto
+          path: coverage/vfs-middleware-crypto
+      - name: Analyze
+        run: >
+          ./mvnw -B verify -DskipTests
+          org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.projectKey=cryptomator_vfs
+          -Dsonar.coverage.jacoco.xmlReportPaths=${GITHUB_WORKSPACE}/coverage/**/jacoco.xml
+          -Dsonar.organization=cryptomator
+          -Dsonar.host.url=https://sonarcloud.io
+          --no-transfer-progress
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Needed to get PR information, if any
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  deploy-central:
+    name: Deploy to Maven Central
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC token for sigstore signing
+      contents: read # Required for sigstore signing
+    needs: [sonarcloud]
+    # In pull_request_target context, github.event.head_commit does not exist, hence we only deploy on pushes
+    if: github.repository_owner == 'cryptomator' && (startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[deploy]'))
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: ${{ env.JAVA_DIST }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'maven'
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_PASSWORD
+      - name: Enforce to use tagged version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ./mvnw versions:set -B -DnewVersion="${GITHUB_REF##*/}"
+      - name: Verify project version is -SNAPSHOT
+        if: startsWith(github.ref, 'refs/tags/') == false
+        run: |
+          PROJECT_VERSION=$(./mvnw help:evaluate "-Dexpression=project.version" -q -DforceStdout)
+          test "${PROJECT_VERSION: -9}" = "-SNAPSHOT"
+      - name: Deploy to Maven Central
+        run: ./mvnw deploy -B -DskipTests -Psign,deploy-central --no-transfer-progress
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.RELEASES_GPG_PASSPHRASE }}
+          MAVEN_GPG_KEY: ${{ secrets.RELEASES_GPG_PRIVATE_KEY }} # Value of the GPG private key to import
+          MAVEN_GPG_KEY_FINGERPRINT: ${{ vars.RELEASES_GPG_KEY_FINGERPRINT }}
+
+  deploy-github:
+    name: Deploy to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write # Required for the deploy to GitHub Packages step
+      id-token: write # OIDC token for sigstore signing
+      contents: read # Required for sigstore signing
+    needs: [sonarcloud]
+    if: github.repository_owner == 'cryptomator' && (startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[deploy]'))
+    # In pull_request_target context, github.event.head_commit does not exist, hence we only deploy on pushes
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Enforce to use tagged version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ./mvnw versions:set -B -DnewVersion="${GITHUB_REF##*/}"
+      - name: Verify project version is -SNAPSHOT
+        if: startsWith(github.ref, 'refs/tags/') == false
+        run: |
+          PROJECT_VERSION=$(./mvnw help:evaluate "-Dexpression=project.version" -q -DforceStdout)
+          test "${PROJECT_VERSION: -9}" = "-SNAPSHOT"
+      - name: Deploy to GitHub Packages
+        run: ./mvnw deploy -B -DskipTests -Psign,deploy-github --no-transfer-progress
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.RELEASES_GPG_PASSPHRASE }}
+          MAVEN_GPG_KEY: ${{ secrets.RELEASES_GPG_PRIVATE_KEY }} # Value of the GPG private key to import
+          MAVEN_GPG_KEY_FINGERPRINT: ${{ vars.RELEASES_GPG_KEY_FINGERPRINT }}
+
+  attestAndRelease:
+    needs: [ sonarcloud ]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required for release
+      id-token: write # OIDC token for the attestations step
+      attestations: write # Required for the attestations step
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'maven'
+      - name: Ensure to use tagged version and update build timestamp
+        run: |
+          ./mvnw versions:set --file ./pom.xml -DnewVersion=${GITHUB_REF##*/}
+          ./mvnw versions:set-property --file ./pom.xml -Dproperty=project.build.outputTimestamp -DnewVersion="$(date --iso-8601=seconds)"
+      - name: Build
+        run: >
+          ./mvnw -B install -DskipTests
+      - name: Attest
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3.1.0
+        with:
+          subject-path: |
+            vfs-*/target/*.jar
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-jars
+          path: |
+            vfs-*/target/*.jar
+      - name: Create Release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+        with:
+          prerelease: true
+          token: ${{ secrets.CRYPTOBOT_RELEASE_TOKEN }}
+          generate_release_notes: true
+          body: |-
+            ### Changelog
+            For a list of all notable changes, read the [changelog](/CHANGELOG.md).
+            
+            ### Maven Coordinates
+            ```xml
+              <dependency>
+                <groupId>org.cryptomator</groupId>
+                <artifactId>vfs</artifactId>
+                <version>${{ github.ref_name }}</version>
+              </dependency>
+            ```
