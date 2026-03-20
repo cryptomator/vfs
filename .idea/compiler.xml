@@ -6,17 +6,14 @@
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
+        <module name="vfs-middleware-crypto" />
+        <module name="vfs-frontend-fuse" />
         <module name="vfs-api" />
         <module name="vfs-common" />
         <module name="vfs-test" />
+        <module name="vfs-frontend-webdav" />
+        <module name="vfs-backend-nio" />
       </profile>
     </annotationProcessing>
-    <bytecodeTargetLevel>
-      <module name="vfs-crypto-decorator" target="25" />
-      <module name="vfs-crypto-middleware" target="25" />
-      <module name="vfs-fuse" target="25" />
-      <module name="vfs-nio" target="25" />
-      <module name="vfs-webdav" target="25" />
-    </bytecodeTargetLevel>
   </component>
 </project>
