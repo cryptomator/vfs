@@ -18,7 +18,7 @@ public interface VfsFileSystem {
 
 	void checkAccess(String path, Set<AccessMode> accessModes) throws IOException;
 
-	List<String> listDirectory(String path) throws IOException;
+	List<VfsDirectoryEntry> listDirectory(String path) throws IOException;
 
 	void createDirectory(String path, Set<PosixFilePermission> permissions) throws IOException;
 

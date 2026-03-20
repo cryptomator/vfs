@@ -1,10 +1,11 @@
 package org.cryptomator.vfs.backend.nio;
 
+import org.cryptomator.vfs.api.VfsDirectoryEntry;
 import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsFileSystem;
+import org.cryptomator.vfs.api.VfsMetadata;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
-import org.cryptomator.vfs.api.VfsMetadata;
 import org.cryptomator.vfs.api.VfsTimes;
 
 import java.io.IOException;
@@ -56,14 +57,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	public VfsNodeMetadata readNodeMetadata(String path) throws IOException {
 		var node = resolve(path);
 		var attrs = Files.readAttributes(node, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-		return new VfsNodeMetadata(
-				toNodeType(attrs),
-				attrs.size(),
-				readPermissions(node, attrs),
-				attrs.lastModifiedTime().toInstant(),
-				attrs.lastAccessTime().toInstant(),
-				attrs.creationTime().toInstant()
-		);
+		return toNodeMetadata(node, attrs);
 	}
 
 	@Override
@@ -85,12 +79,13 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	}
 
 	@Override
-	public List<String> listDirectory(String path) throws IOException {
+	public List<VfsDirectoryEntry> listDirectory(String path) throws IOException {
 		var node = resolve(path);
-		var entries = new ArrayList<String>();
+		var entries = new ArrayList<VfsDirectoryEntry>();
 		try (var dir = Files.newDirectoryStream(node)) {
 			for (var child : dir) {
-				entries.add(child.getFileName().toString());
+				var attrs = Files.readAttributes(child, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+				entries.add(new VfsDirectoryEntry(child.getFileName().toString(), toNodeMetadata(child, attrs)));
 			}
 		}
 		return List.copyOf(entries);
@@ -202,6 +197,17 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 			return VfsNodeType.SYMBOLIC_LINK;
 		}
 		return VfsNodeType.FILE;
+	}
+
+	private VfsNodeMetadata toNodeMetadata(Path node, BasicFileAttributes attrs) throws IOException {
+		return new VfsNodeMetadata(
+				toNodeType(attrs),
+				attrs.size(),
+				readPermissions(node, attrs),
+				attrs.lastModifiedTime().toInstant(),
+				attrs.lastAccessTime().toInstant(),
+				attrs.creationTime().toInstant()
+		);
 	}
 
 	private record NioOpenFile(FileChannel channel) implements VfsFile {

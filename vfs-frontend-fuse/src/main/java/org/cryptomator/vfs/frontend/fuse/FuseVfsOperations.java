@@ -10,11 +10,12 @@ import org.cryptomator.jfuse.api.FuseOperations;
 import org.cryptomator.jfuse.api.Stat;
 import org.cryptomator.jfuse.api.Statvfs;
 import org.cryptomator.jfuse.api.TimeSpec;
+import org.cryptomator.vfs.api.VfsDirectoryEntry;
 import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsFileSystem;
-import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.api.VfsMetadata;
+import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsTimes;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -103,19 +104,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	@Override
 	public int getattr(String path, Stat stat, @Nullable FileInfo fi) {
 		try {
-			VfsNodeMetadata metadata = fileSystem.readNodeMetadata(path);
-			stat.setPermissions(metadata.permissions());
-			stat.setSize(metadata.size());
-			stat.setNLink((short) (metadata.type() == VfsNodeType.DIRECTORY ? 2 : 1));
-			switch (metadata.type()) {
-				case FILE -> stat.setModeBits(Stat.S_IFREG);
-				case DIRECTORY -> stat.setModeBits(Stat.S_IFDIR);
-				case SYMBOLIC_LINK -> stat.setModeBits(Stat.S_IFLNK);
-			}
-			stat.aTime().set(metadata.lastAccessTime());
-			stat.mTime().set(metadata.lastModifiedTime());
-			stat.cTime().set(metadata.lastModifiedTime());
-			stat.birthTime().set(metadata.creationTime());
+			applyNodeMetadata(stat, fileSystem.readNodeMetadata(path));
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -163,10 +152,11 @@ public final class FuseVfsOperations implements FuseOperations {
 	@Override
 	public int readdir(String path, DirFiller filler, long offset, FileInfo fi, int flags) {
 		try {
-			filler.fill(".");
-			filler.fill("..");
+			boolean fillPlus = (flags & FuseOperations.FUSE_READDIR_PLUS) != 0;
+			fillEntry(filler, ".", fileSystem.readNodeMetadata(path), fillPlus);
+			fillEntry(filler, "..", fileSystem.readNodeMetadata(parentPath(path)), fillPlus);
 			for (var child : fileSystem.listDirectory(path)) {
-				filler.fill(child);
+				fillEntry(filler, child, fillPlus);
 			}
 			return 0;
 		} catch (IOException e) {
@@ -350,6 +340,47 @@ public final class FuseVfsOperations implements FuseOperations {
 		} catch (IOException e) {
 			return toErrno(e);
 		}
+	}
+
+	private void fillEntry(DirFiller filler, VfsDirectoryEntry entry, boolean fillPlus) throws IOException {
+		fillEntry(filler, entry.name(), entry.metadata(), fillPlus);
+	}
+
+	private void fillEntry(DirFiller filler, String name, VfsNodeMetadata metadata, boolean fillPlus) throws IOException {
+		if (!fillPlus) {
+			filler.fill(name);
+			return;
+		}
+		int result = filler.fill(name, stat -> applyNodeMetadata(stat, metadata), 0L, DirFiller.FUSE_FILL_DIR_PLUS);
+		if (result != 0) {
+			throw new IOException("fuse_fill_dir_t unexpectedly returned " + result);
+		}
+	}
+
+	private void applyNodeMetadata(Stat stat, VfsNodeMetadata metadata) {
+		stat.setPermissions(metadata.permissions());
+		stat.setSize(metadata.size());
+		stat.setNLink((short) (metadata.type() == VfsNodeType.DIRECTORY ? 2 : 1));
+		switch (metadata.type()) {
+			case FILE -> stat.setModeBits(Stat.S_IFREG);
+			case DIRECTORY -> stat.setModeBits(Stat.S_IFDIR);
+			case SYMBOLIC_LINK -> stat.setModeBits(Stat.S_IFLNK);
+		}
+		stat.aTime().set(metadata.lastAccessTime());
+		stat.mTime().set(metadata.lastModifiedTime());
+		stat.cTime().set(metadata.lastModifiedTime());
+		stat.birthTime().set(metadata.creationTime());
+	}
+
+	private String parentPath(String path) {
+		if (path.isBlank() || "/".equals(path)) {
+			return "/";
+		}
+		int lastSeparator = path.lastIndexOf('/');
+		if (lastSeparator <= 0) {
+			return "/";
+		}
+		return path.substring(0, lastSeparator);
 	}
 
 	private Set<AccessMode> toAccessModes(int mask) {
