@@ -4,16 +4,19 @@ import org.cryptomator.jfuse.api.Fuse;
 import org.cryptomator.jfuse.api.FuseMountFailedException;
 import org.cryptomator.vfs.backend.nio.NioVfsFileSystem;
 import org.cryptomator.vfs.frontend.fuse.FuseVfsOperations;
+import org.cryptomator.vfs.middleware.uvf.UvfFileSystem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Mounts a physical directory through the NIO backend and the FUSE frontend.
+ * Mounts an encrypted vault directory through the NIO backend, UVF middleware, and FUSE frontend.
  */
 public final class VfsTestMain {
 
@@ -25,27 +28,34 @@ public final class VfsTestMain {
 			return;
 		}
 
-		var sourceDir = Path.of(args[0]).toAbsolutePath().normalize();
+		var vaultDir = Path.of(args[0]).toAbsolutePath().normalize();
 		var mountPoint = Path.of(args[1]).toAbsolutePath().normalize();
 		var libraryPath = args.length == 3 ? args[2] : null;
 
-		if (!Files.isDirectory(sourceDir)) {
-			throw new IllegalArgumentException("Source directory does not exist: " + sourceDir);
+		if (!Files.isDirectory(vaultDir)) {
+			throw new IllegalArgumentException("Vault directory does not exist: " + vaultDir);
 		}
 		if (!Files.isDirectory(mountPoint)) {
 			throw new IllegalArgumentException("Mount point does not exist: " + mountPoint);
 		}
 
-		var backend = new NioVfsFileSystem(sourceDir);
+		var backend = new NioVfsFileSystem(vaultDir);
+		var ciphertextLoggingMiddleware = new LoggingVfsFileSystem("ciphertext", backend);
+		var uvfMiddleware = UvfFileSystem.create(ciphertextLoggingMiddleware, jweData -> {
+			// TODO: replace with proper JWE decryption
+			return new String(jweData, StandardCharsets.UTF_8);
+		}, SecureRandom.getInstanceStrong());
+		var cleartextLoggingMiddleware = new LoggingVfsFileSystem("cleartext", uvfMiddleware);
+
 		var builder = Fuse.builder();
 		if (libraryPath != null && !libraryPath.isBlank()) {
 			builder.setLibraryPath(libraryPath);
 		}
 
-		var operations = new FuseVfsOperations(backend, builder.errno());
+		var operations = new FuseVfsOperations(cleartextLoggingMiddleware, builder.errno());
 		try (var fuse = builder.build(operations)) {
 			Runtime.getRuntime().addShutdownHook(new Thread(() -> closeQuietly(fuse), "vfs-test-shutdown"));
-			LOG.info("Mounting{} at {}", sourceDir, mountPoint);
+			LOG.info("Mounting {} at {}", vaultDir, mountPoint);
 			fuse.mount("vfs-test", mountPoint, "-s");
 			LOG.info("Enter anything to unmount...");
 			System.in.read();
@@ -59,7 +69,7 @@ public final class VfsTestMain {
 	}
 
 	private static void printUsage() {
-		System.out.println("Usage: VfsTestMain <sourceDir> <mountPoint> [fuseLibraryPath]");
+		System.out.println("Usage: VfsTestMain <vaultDir> <mountPoint> [fuseLibraryPath]");
 	}
 
 	private static void closeQuietly(Fuse fuse) {

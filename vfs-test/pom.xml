@@ -30,6 +30,11 @@
 		</dependency>
 		<dependency>
 			<groupId>org.cryptomator</groupId>
+			<artifactId>vfs-middleware-uvf</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.cryptomator</groupId>
 			<artifactId>jfuse</artifactId>
 			<version>${jfuse.version}</version>
 		</dependency>

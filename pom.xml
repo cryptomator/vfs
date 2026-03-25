@@ -78,15 +78,36 @@
 		<module>vfs-backend-nio</module>
 		<module>vfs-frontend-fuse</module>
 		<module>vfs-frontend-webdav</module>
-		<module>vfs-middleware-crypto</module>
+		<module>vfs-middleware-uvf</module>
 		<module>vfs-test</module>
 	</modules>
+
+    <repositories>
+        <repository>
+            <name>Central Portal Snapshots</name>
+            <id>central-portal-snapshots</id>
+            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
 
 	<dependencies>
 		<dependency>
 			<groupId>org.jspecify</groupId>
 			<artifactId>jspecify</artifactId>
 		</dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>test</scope>
+        </dependency>
 		<dependency>
 			<groupId>org.junit.jupiter</groupId>
 			<artifactId>junit-jupiter</artifactId>

@@ -93,7 +93,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 	@Override
 	public void createDirectory(String path, Set<PosixFilePermission> permissions) throws IOException {
-		Files.createDirectory(resolve(path), posixAttributes(permissions));
+		Files.createDirectories(resolve(path), posixAttributes(permissions));
 	}
 
 	@Override
@@ -151,7 +151,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	}
 
 	private Set<StandardOpenOption> normalizeOpenOptions(Set<StandardOpenOption> options) {
-		if (options == null || options.isEmpty()) {
+		if (options.isEmpty()) {
 			return EnumSet.of(StandardOpenOption.READ);
 		}
 		if (options.size() == 1 && options.contains(StandardOpenOption.APPEND)) {
@@ -161,7 +161,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	}
 
 	private FileAttribute<?>[] posixAttributes(Set<PosixFilePermission> permissions) {
-		if (!posix || permissions == null || permissions.isEmpty()) {
+		if (!posix || permissions.isEmpty()) {
 			return new FileAttribute<?>[0];
 		}
 		return new FileAttribute<?>[]{PosixFilePermissions.asFileAttribute(permissions)};

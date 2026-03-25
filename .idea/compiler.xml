@@ -6,12 +6,12 @@
         <sourceOutputDir name="target/generated-sources/annotations" />
         <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
         <outputRelativeToContentRoot value="true" />
-        <module name="vfs-middleware-crypto" />
         <module name="vfs-frontend-fuse" />
         <module name="vfs-api" />
         <module name="vfs-common" />
         <module name="vfs-test" />
         <module name="vfs-frontend-webdav" />
+        <module name="vfs-middleware-uvf" />
         <module name="vfs-backend-nio" />
       </profile>
     </annotationProcessing>

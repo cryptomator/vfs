@@ -8,3 +8,9 @@
 # Maven #
 target/
 pom.xml.versionsBackup
+
+# Eclipse #
+.classpath
+.project
+.settings/
+bin/
