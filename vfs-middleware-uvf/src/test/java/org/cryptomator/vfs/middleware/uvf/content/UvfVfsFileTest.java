@@ -6,6 +6,9 @@ import org.cryptomator.cryptolib.api.FileContentCryptor;
 import org.cryptomator.cryptolib.api.FileHeaderCryptor;
 import org.cryptomator.cryptolib.api.UVFMasterkey;
 import org.cryptomator.vfs.api.VfsFile;
+import org.cryptomator.vfs.api.VfsNodeMetadata;
+import org.cryptomator.vfs.api.VfsNodeType;
+import org.cryptomator.vfs.api.VfsTimes;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,7 +17,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.Arrays;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -134,6 +139,94 @@ class UvfVfsFileTest {
 	}
 
 	@Test
+	@DisplayName("sequential small writes append within a chunk")
+	void sequentialSmallWrites() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+			assertEquals(2, file.write(ByteBuffer.wrap("hi".getBytes(StandardCharsets.UTF_8)), 0));
+			assertEquals(1, file.write(ByteBuffer.wrap("!".getBytes(StandardCharsets.UTF_8)), 2));
+			assertEquals(1, file.write(ByteBuffer.wrap("?".getBytes(StandardCharsets.UTF_8)), 5)); // leaves a zero-filled gap
+		}
+
+		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
+			ByteBuffer dst = ByteBuffer.allocate(10);
+			assertEquals(6, file.read(dst, 0));
+			assertArrayEquals(new byte[]{'h', 'i', '!', 0, 0, '?'}, Arrays.copyOf(dst.array(), 6));
+		}
+	}
+
+	@Test
+	@DisplayName("readMetadata reports cleartext size")
+	void readMetadataReportsCleartextSize() throws IOException {
+		var backing = new InMemoryVfsFile();
+		byte[] cleartext = new byte[contentCryptor.cleartextChunkSize() + 7];
+
+		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+			assertEquals(0, file.readMetadata().size());
+			file.write(ByteBuffer.wrap(cleartext), 0);
+			assertEquals(cleartext.length, file.readMetadata().size());
+		}
+		assertTrue(backing.size() > cleartext.length);
+	}
+
+	@Test
+	@DisplayName("truncate mid-chunk keeps the remaining data readable")
+	void truncateMidChunk() throws IOException {
+		var backing = new InMemoryVfsFile();
+		byte[] cleartext = new byte[contentCryptor.cleartextChunkSize() * 2 + 100];
+		new SecureRandom().nextBytes(cleartext);
+		int newSize = contentCryptor.cleartextChunkSize() + 50;
+
+		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+			file.write(ByteBuffer.wrap(cleartext), 0);
+			file.truncate(newSize);
+			assertEquals(newSize, file.readMetadata().size());
+		}
+
+		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
+			ByteBuffer dst = ByteBuffer.allocate(newSize + 10);
+			assertEquals(newSize, file.read(dst, 0));
+			assertArrayEquals(Arrays.copyOf(cleartext, newSize), Arrays.copyOf(dst.array(), newSize));
+			assertEquals(-1, file.read(ByteBuffer.allocate(1), newSize));
+		}
+	}
+
+	@Test
+	@DisplayName("truncate to zero leaves only the header")
+	void truncateToZero() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+			file.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)), 0);
+			file.truncate(0);
+			assertEquals(0, file.readMetadata().size());
+		}
+
+		assertEquals(headerCryptor.headerSize(), backing.size());
+	}
+
+	@Test
+	@DisplayName("truncate beyond end zero-extends")
+	void truncateExtends() throws IOException {
+		var backing = new InMemoryVfsFile();
+		int newSize = contentCryptor.cleartextChunkSize() + 3;
+
+		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+			file.write(ByteBuffer.wrap("hi".getBytes(StandardCharsets.UTF_8)), 0);
+			file.truncate(newSize);
+			assertEquals(newSize, file.readMetadata().size());
+
+			ByteBuffer dst = ByteBuffer.allocate(newSize);
+			assertEquals(newSize, file.read(dst, 0));
+			byte[] expected = new byte[newSize];
+			expected[0] = 'h';
+			expected[1] = 'i';
+			assertArrayEquals(expected, dst.array());
+		}
+	}
+
+	@Test
 	@DisplayName("createNew writes header with UVF magic bytes")
 	void headerContainsMagicBytes() throws IOException {
 		var backing = new InMemoryVfsFile();
@@ -201,6 +294,19 @@ class UvfVfsFileTest {
 			src.get(data, (int) offset, length);
 			return length;
 		}
+
+		@Override
+		public VfsNodeMetadata readMetadata() {
+			return new VfsNodeMetadata(VfsNodeType.FILE, data.length, VfsNodeMetadata.NO_FILE_ID, Set.of(), Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Instant.EPOCH);
+		}
+
+		@Override
+		public void truncate(long size) {
+			data = Arrays.copyOf(data, (int) size);
+		}
+
+		@Override
+		public void setTimes(VfsTimes times) {}
 
 		@Override
 		public void force(boolean metadata) {}

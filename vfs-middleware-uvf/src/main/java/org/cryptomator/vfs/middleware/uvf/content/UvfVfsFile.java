@@ -4,6 +4,9 @@ import org.cryptomator.cryptolib.api.FileContentCryptor;
 import org.cryptomator.cryptolib.api.FileHeader;
 import org.cryptomator.cryptolib.api.FileHeaderCryptor;
 import org.cryptomator.vfs.api.VfsFile;
+import org.cryptomator.vfs.api.VfsNodeMetadata;
+import org.cryptomator.vfs.api.VfsNodeType;
+import org.cryptomator.vfs.api.VfsTimes;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -139,7 +142,9 @@ public final class UvfVfsFile implements VfsFile {
 				cleartextChunk = ByteBuffer.allocate(cleartextChunkSize);
 			}
 
-			// write src data into the cleartext chunk at the correct position
+			// write src data into the cleartext chunk at the correct position, growing the chunk if needed (gaps are zero-filled)
+			int existingDataEnd = cleartextChunk.limit();
+			cleartextChunk.limit(cleartextChunkSize);
 			cleartextChunk.position(offsetInChunk);
 			int bytesToWrite = Math.min(src.remaining(), cleartextChunk.remaining());
 			int oldLimit = src.limit();
@@ -147,12 +152,9 @@ public final class UvfVfsFile implements VfsFile {
 			cleartextChunk.put(src);
 			src.limit(oldLimit);
 
-			// adjust limit to actual data end (max of old data and new data)
-			int newDataEnd = offsetInChunk + bytesToWrite;
-			if (newDataEnd > cleartextChunk.limit()) {
-				cleartextChunk.limit(newDataEnd);
-			}
-			cleartextChunk.flip();
+			// chunk now spans the old data and the new data, whichever ends later
+			cleartextChunk.limit(Math.max(existingDataEnd, offsetInChunk + bytesToWrite));
+			cleartextChunk.position(0);
 
 			// encrypt and write
 			ByteBuffer ciphertextChunk = contentCryptor.encryptChunk(cleartextChunk, chunkNumber, header);
@@ -166,8 +168,79 @@ public final class UvfVfsFile implements VfsFile {
 	}
 
 	@Override
+	public VfsNodeMetadata readMetadata() throws IOException {
+		return toCleartextMetadata(delegate.readMetadata(), headerSize, contentCryptor);
+	}
+
+	@Override
+	public void truncate(long size) throws IOException {
+		if (size < 0) {
+			throw new IllegalArgumentException("Negative size");
+		}
+		long currentSize = readMetadata().size();
+		if (size > currentSize) {
+			zeroExtend(currentSize, size);
+		} else if (size < currentSize) {
+			shrink(size);
+		}
+	}
+
+	// re-encrypts the chunk that would otherwise be cut mid-way, then truncates the ciphertext
+	private void shrink(long size) throws IOException {
+		long chunkNumber = size / cleartextChunkSize;
+		int offsetInChunk = (int) (size % cleartextChunkSize);
+		if (offsetInChunk > 0) {
+			ByteBuffer cleartextChunk = readExistingChunkOrAllocate(chunkNumber);
+			cleartextChunk.limit(Math.min(cleartextChunk.limit(), offsetInChunk));
+			ByteBuffer ciphertextChunk = contentCryptor.encryptChunk(cleartextChunk, chunkNumber, header);
+			delegate.write(ciphertextChunk, headerSize + chunkNumber * ciphertextChunkSize);
+		}
+		delegate.truncate(headerSize + contentCryptor.ciphertextSize(size));
+	}
+
+	private void zeroExtend(long from, long to) throws IOException {
+		var zeros = ByteBuffer.allocate(cleartextChunkSize);
+		long position = from;
+		while (position < to) {
+			zeros.clear().limit((int) Math.min(cleartextChunkSize, to - position));
+			position += write(zeros, position);
+		}
+	}
+
+	@Override
+	public void setTimes(VfsTimes times) throws IOException {
+		delegate.setTimes(times);
+	}
+
+	@Override
 	public void force(boolean metadata) throws IOException {
 		delegate.force(metadata);
+	}
+
+	/**
+	 * Translates the metadata of a ciphertext node to its cleartext view by converting the size of regular files.
+	 *
+	 * @param ciphertextMetadata metadata as reported by the delegate
+	 * @param headerSize size of the file header in bytes
+	 * @param contentCryptor cryptor used for the content chunks
+	 * @return metadata with the cleartext size; unchanged for non-files
+	 */
+	public static VfsNodeMetadata toCleartextMetadata(VfsNodeMetadata ciphertextMetadata, int headerSize, FileContentCryptor contentCryptor) {
+		if (ciphertextMetadata.type() != VfsNodeType.FILE) {
+			return ciphertextMetadata;
+		}
+		long payloadSize = ciphertextMetadata.size() - headerSize;
+		long cleartextSize = payloadSize > 0 ? contentCryptor.cleartextSize(payloadSize) : 0;
+		return new VfsNodeMetadata(
+				ciphertextMetadata.type(),
+				cleartextSize,
+				ciphertextMetadata.fileId(),
+				ciphertextMetadata.permissions(),
+				ciphertextMetadata.lastModifiedTime(),
+				ciphertextMetadata.lastAccessTime(),
+				ciphertextMetadata.changeTime(),
+				ciphertextMetadata.creationTime()
+		);
 	}
 
 	@Override
@@ -176,19 +249,19 @@ public final class UvfVfsFile implements VfsFile {
 	}
 
 	/**
-	 * Reads an existing ciphertext chunk and decrypts it, or allocates a new empty buffer
-	 * if the chunk doesn't exist yet (i.e., writing beyond current file size).
+	 * Reads an existing ciphertext chunk and decrypts it into a zero-filled buffer of {@code cleartextChunkSize} capacity,
+	 * whose limit marks the end of the existing data (0 if the chunk doesn't exist yet).
 	 */
 	private ByteBuffer readExistingChunkOrAllocate(long chunkNumber) throws IOException {
+		ByteBuffer cleartextChunk = ByteBuffer.allocate(cleartextChunkSize);
 		long ciphertextOffset = headerSize + chunkNumber * ciphertextChunkSize;
 		ByteBuffer ciphertextChunk = ByteBuffer.allocate(ciphertextChunkSize);
 		int bytesRead = readFully(ciphertextChunk, ciphertextOffset);
-		if (bytesRead == 0) {
-			// chunk doesn't exist yet — return empty buffer
-			return ByteBuffer.allocate(cleartextChunkSize);
+		if (bytesRead > 0) {
+			ciphertextChunk.flip();
+			cleartextChunk.put(contentCryptor.decryptChunk(ciphertextChunk, chunkNumber, header, true));
 		}
-		ciphertextChunk.flip();
-		return contentCryptor.decryptChunk(ciphertextChunk, chunkNumber, header, true);
+		return cleartextChunk.flip();
 	}
 
 	/**

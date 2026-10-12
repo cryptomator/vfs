@@ -2,7 +2,9 @@ package org.cryptomator.vfs.middleware.uvf;
 
 import org.cryptomator.cryptolib.api.Cryptor;
 import org.cryptomator.cryptolib.api.DirectoryMetadata;
+import org.cryptomator.vfs.api.VfsCapabilities;
 import org.cryptomator.vfs.api.VfsDirectoryEntry;
+import org.cryptomator.vfs.api.VfsDirectoryStream;
 import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsFileSystem;
 import org.cryptomator.vfs.api.VfsMetadata;
@@ -12,15 +14,18 @@ import org.cryptomator.vfs.api.VfsTimes;
 import org.cryptomator.vfs.middleware.uvf.content.UvfVfsFile;
 import org.cryptomator.vfs.middleware.uvf.dir.DirectoryPathResolver;
 import org.cryptomator.vfs.middleware.uvf.vault.VaultConfig;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.AccessMode;
+import java.nio.file.FileSystemException;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.SecureRandom;
-import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.List;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 import java.util.Set;
 
 /**
@@ -36,11 +41,14 @@ public final class UvfFileSystem implements VfsFileSystem {
 	private final VfsFileSystem delegate;
 	private final Cryptor cryptor;
 	private final DirectoryPathResolver pathResolver;
+	private final VfsCapabilities capabilities;
 
 	private UvfFileSystem(VfsFileSystem delegate, Cryptor cryptor, DirectoryPathResolver pathResolver) {
 		this.delegate = delegate;
 		this.cryptor = cryptor;
 		this.pathResolver = pathResolver;
+		// encrypted names are compared exactly, symlinks and xattrs are not yet part of this middleware
+		this.capabilities = new VfsCapabilities(true, false, false, 0);
 	}
 
 	/**
@@ -72,15 +80,14 @@ public final class UvfFileSystem implements VfsFileSystem {
 	}
 
 	@Override
+	public VfsCapabilities capabilities() {
+		return capabilities;
+	}
+
+	@Override
 	public VfsNodeMetadata readNodeMetadata(String path) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextMetadata = delegate.readNodeMetadata(resolved.ciphertextPath());
-		if (ciphertextMetadata.type() == VfsNodeType.FILE) {
-			long ciphertextPayloadSize = ciphertextMetadata.size() - cryptor.fileHeaderCryptor().headerSize();
-			long cleartextSize = ciphertextPayloadSize > 0 ? cryptor.fileContentCryptor().cleartextSize(ciphertextPayloadSize) : 0;
-			return new VfsNodeMetadata(ciphertextMetadata.type(), cleartextSize, ciphertextMetadata.permissions(), ciphertextMetadata.lastModifiedTime(), ciphertextMetadata.lastAccessTime(), ciphertextMetadata.creationTime());
-		}
-		return ciphertextMetadata;
+		return toCleartextMetadata(delegate.readNodeMetadata(resolved.ciphertextPath()));
 	}
 
 	@Override
@@ -96,24 +103,54 @@ public final class UvfFileSystem implements VfsFileSystem {
 	}
 
 	@Override
-	public List<VfsDirectoryEntry> listDirectory(String path) throws IOException {
+	public VfsDirectoryStream openDirectory(String path) throws IOException {
 		String ciphertextContentDir = pathResolver.resolveContentDir(path);
 		DirectoryMetadata dirMetadata = pathResolver.resolveDirectoryMetadata(path);
 		var decryptor = pathResolver.dirCryptor().fileNameDecryptor(dirMetadata);
+		var ciphertextStream = delegate.openDirectory(ciphertextContentDir);
+		return new VfsDirectoryStream() {
 
-		List<VfsDirectoryEntry> result = new ArrayList<>();
-		for (var ciphertextEntry : delegate.listDirectory(ciphertextContentDir)) {
-			if (DIR_METADATA_FILE.equals(ciphertextEntry.name())) {
-				continue; // skip dir.uvf metadata files
+			@Override
+			public Iterator<VfsDirectoryEntry> iterator() {
+				var ciphertextEntries = ciphertextStream.iterator();
+				return new Iterator<>() {
+
+					private @Nullable VfsDirectoryEntry next;
+
+					@Override
+					public boolean hasNext() {
+						while (next == null && ciphertextEntries.hasNext()) {
+							var ciphertextEntry = ciphertextEntries.next();
+							if (DIR_METADATA_FILE.equals(ciphertextEntry.name())) {
+								continue; // skip dir.uvf metadata files
+							}
+							try {
+								String cleartextName = decryptor.decrypt(ciphertextEntry.name());
+								next = new VfsDirectoryEntry(cleartextName, toCleartextMetadata(ciphertextEntry.metadata()));
+							} catch (IllegalArgumentException e) {
+								// skip entries that can't be decrypted (e.g., non-.uvf files)
+							}
+						}
+						return next != null;
+					}
+
+					@Override
+					public VfsDirectoryEntry next() {
+						if (!hasNext()) {
+							throw new NoSuchElementException();
+						}
+						var result = next;
+						next = null;
+						return result;
+					}
+				};
 			}
-			try {
-				String cleartextName = decryptor.decrypt(ciphertextEntry.name());
-				result.add(new VfsDirectoryEntry(cleartextName, ciphertextEntry.metadata()));
-			} catch (IllegalArgumentException e) {
-				// skip entries that can't be decrypted (e.g., non-.uvf files)
+
+			@Override
+			public void close() throws IOException {
+				ciphertextStream.close();
 			}
-		}
-		return List.copyOf(result);
+		};
 	}
 
 	@Override
@@ -134,7 +171,7 @@ public final class UvfFileSystem implements VfsFileSystem {
 
 	@Override
 	public void deleteDirectory(String path) throws IOException {
-		// first delete the content directory
+		// first delete the content directory, this fails if the cleartext directory is not empty
 		String ciphertextContentDir = pathResolver.resolveContentDir(path);
 		delegate.deleteDirectory(ciphertextContentDir);
 
@@ -147,11 +184,8 @@ public final class UvfFileSystem implements VfsFileSystem {
 	@Override
 	public VfsFile openFile(String path, Set<StandardOpenOption> options) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextOptions = ensureReadable(options);
-
-		boolean fileExists = fileExists(resolved.ciphertextPath());
-		var ciphertextFile = delegate.openFile(resolved.ciphertextPath(), ciphertextOptions);
-		if (!fileExists && options.contains(StandardOpenOption.CREATE)) {
+		var ciphertextFile = delegate.openFile(resolved.ciphertextPath(), ciphertextOptions(options));
+		if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
 			return UvfVfsFile.createNew(ciphertextFile, cryptor.fileHeaderCryptor(), cryptor.fileContentCryptor());
 		} else {
 			return UvfVfsFile.openExisting(ciphertextFile, cryptor.fileHeaderCryptor(), cryptor.fileContentCryptor());
@@ -161,33 +195,40 @@ public final class UvfFileSystem implements VfsFileSystem {
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextFile = delegate.createFile(resolved.ciphertextPath(), ensureReadable(options), permissions);
-		return UvfVfsFile.createNew(ciphertextFile, cryptor.fileHeaderCryptor(), cryptor.fileContentCryptor());
+		boolean existed = exists(resolved.ciphertextPath());
+		var ciphertextFile = delegate.createFile(resolved.ciphertextPath(), ciphertextOptions(options), permissions);
+		if (!existed || options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+			return UvfVfsFile.createNew(ciphertextFile, cryptor.fileHeaderCryptor(), cryptor.fileContentCryptor());
+		} else {
+			return UvfVfsFile.openExisting(ciphertextFile, cryptor.fileHeaderCryptor(), cryptor.fileContentCryptor());
+		}
 	}
 
-	/**
-	 * Encrypted I/O always needs READ access (to read the header and for read-modify-write on partial chunks).
-	 */
-	private static EnumSet<StandardOpenOption> ensureReadable(Set<StandardOpenOption> options) {
-		var result = EnumSet.copyOf(options);
+	// encrypted I/O always needs READ access (header, read-modify-write of partial chunks) and is strictly positional, so APPEND must not leak through
+	private static EnumSet<StandardOpenOption> ciphertextOptions(Set<StandardOpenOption> options) {
+		var result = EnumSet.noneOf(StandardOpenOption.class);
+		result.addAll(options);
 		result.add(StandardOpenOption.READ);
+		if (result.remove(StandardOpenOption.APPEND)) {
+			result.add(StandardOpenOption.WRITE);
+		}
 		return result;
 	}
 
-	private boolean fileExists(String ciphertextPath) {
+	private boolean exists(String ciphertextPath) throws IOException {
 		try {
 			delegate.checkAccess(ciphertextPath, Set.of());
 			return true;
-		} catch (IOException e) {
+		} catch (NoSuchFileException e) {
 			return false;
 		}
 	}
 
 	@Override
 	public void truncate(String path, long size) throws IOException {
-		var resolved = pathResolver.resolve(path);
-		long ciphertextSize = size == 0 ? cryptor.fileHeaderCryptor().headerSize() : cryptor.fileHeaderCryptor().headerSize() + cryptor.fileContentCryptor().ciphertextSize(size);
-		delegate.truncate(resolved.ciphertextPath(), ciphertextSize);
+		try (var file = openFile(path, Set.of(StandardOpenOption.WRITE))) {
+			file.truncate(size);
+		}
 	}
 
 	@Override
@@ -197,15 +238,40 @@ public final class UvfFileSystem implements VfsFileSystem {
 	}
 
 	@Override
-	public void rename(String sourcePath, String targetPath) throws IOException {
+	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
 		var resolvedSource = pathResolver.resolve(sourcePath);
 		var resolvedTarget = pathResolver.resolve(targetPath);
-		delegate.rename(resolvedSource.ciphertextPath(), resolvedTarget.ciphertextPath());
+		if (replaceExisting && isDirectory(resolvedTarget.ciphertextPath())) {
+			// a ciphertext directory entry always contains dir.uvf, so the delegate can never replace it; remove the (empty) cleartext directory first
+			if (!isDirectory(resolvedSource.ciphertextPath())) {
+				throw new FileSystemException(sourcePath, targetPath, "Is a directory");
+			}
+			deleteDirectory(targetPath);
+		}
+		delegate.rename(resolvedSource.ciphertextPath(), resolvedTarget.ciphertextPath(), replaceExisting);
+	}
+
+	private boolean isDirectory(String ciphertextPath) throws IOException {
+		try {
+			return delegate.readNodeMetadata(ciphertextPath).type() == VfsNodeType.DIRECTORY;
+		} catch (NoSuchFileException e) {
+			return false;
+		}
 	}
 
 	@Override
 	public void setTimes(String path, VfsTimes times) throws IOException {
 		var resolved = pathResolver.resolve(path);
 		delegate.setTimes(resolved.ciphertextPath(), times);
+	}
+
+	@Override
+	public void setPermissions(String path, Set<PosixFilePermission> permissions) throws IOException {
+		var resolved = pathResolver.resolve(path);
+		delegate.setPermissions(resolved.ciphertextPath(), permissions);
+	}
+
+	private VfsNodeMetadata toCleartextMetadata(VfsNodeMetadata ciphertextMetadata) {
+		return UvfVfsFile.toCleartextMetadata(ciphertextMetadata, cryptor.fileHeaderCryptor().headerSize(), cryptor.fileContentCryptor());
 	}
 }
