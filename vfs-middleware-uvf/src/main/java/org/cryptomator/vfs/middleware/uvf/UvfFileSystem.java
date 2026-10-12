@@ -18,6 +18,7 @@ import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.AccessMode;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardOpenOption;
@@ -156,17 +157,38 @@ public final class UvfFileSystem implements VfsFileSystem {
 	@Override
 	public void createDirectory(String path, Set<PosixFilePermission> permissions) throws IOException {
 		var resolved = pathResolver.resolve(path);
-
-		// create the encrypted directory entry in the parent's content dir
-		delegate.createDirectory(resolved.ciphertextPath(), permissions);
-
-		// create new directory metadata and write dir.uvf
 		DirectoryMetadata newMetadata = pathResolver.newDirectoryMetadata();
-		pathResolver.writeDirectoryMetadata(resolved.ciphertextPath(), newMetadata);
 
-		// create the content directory (d/XX/YYYYYY...)
+		// create the content directory (d/XX/YYYYYY...) first, an orphaned content dir is harmless whereas a dangling entry is not
 		String ciphertextContentDir = "/" + pathResolver.dirCryptor().dirPath(newMetadata);
+		createDirectoryIfMissing(parentOf(ciphertextContentDir), permissions);
 		delegate.createDirectory(ciphertextContentDir, permissions);
+
+		// create the encrypted directory entry in the parent's content dir and write dir.uvf into it
+		try {
+			delegate.createDirectory(resolved.ciphertextPath(), permissions);
+			pathResolver.writeDirectoryMetadata(resolved.ciphertextPath(), newMetadata);
+		} catch (IOException e) {
+			try {
+				delegate.deleteDirectory(ciphertextContentDir);
+			} catch (IOException suppressed) {
+				e.addSuppressed(suppressed);
+			}
+			throw e;
+		}
+	}
+
+	private void createDirectoryIfMissing(String ciphertextPath, Set<PosixFilePermission> permissions) throws IOException {
+		try {
+			delegate.createDirectory(ciphertextPath, permissions);
+		} catch (FileAlreadyExistsException e) {
+			// shard directory exists, nothing to do
+		}
+	}
+
+	private static String parentOf(String path) {
+		int lastSeparator = path.lastIndexOf('/');
+		return lastSeparator <= 0 ? "/" : path.substring(0, lastSeparator);
 	}
 
 	@Override
