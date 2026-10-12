@@ -18,6 +18,7 @@ Subprojects:
 
 - [`vfs-api`](vfs-api): common VFS API between layers
 - [`vfs-common`](vfs-common): shared code used by implementations
+- [`vfs-frontend-fskit`](vfs-frontend-fskit): frontend for FSKit-based access on macOS
 - [`vfs-frontend-fuse`](vfs-frontend-fuse): frontend for FUSE-based access
 - [`vfs-frontend-webdav`](vfs-frontend-webdav): frontend for WebDAV-based access
 - [`vfs-middleware-crypto`](vfs-middleware-crypto): middleware for encrypting writes and decrypting reads

@@ -20,6 +20,11 @@
 	<dependencies>
 		<dependency>
 			<groupId>org.cryptomator</groupId>
+			<artifactId>vfs-frontend-fskit</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.cryptomator</groupId>
 			<artifactId>vfs-frontend-fuse</artifactId>
 			<version>${project.version}</version>
 		</dependency>
@@ -54,6 +59,24 @@
 				<configuration>
 					<mainClass>org.cryptomator.vfs.test.VfsTestMain</mainClass>
 				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-dependency-plugin</artifactId>
+				<executions>
+					<!-- runtime classpath for the FSKit extension bundle; the project's own jar must be added alongside -->
+					<execution>
+						<id>copy-runtime-dependencies</id>
+						<phase>package</phase>
+						<goals>
+							<goal>copy-dependencies</goal>
+						</goals>
+						<configuration>
+							<outputDirectory>${project.build.directory}/libs</outputDirectory>
+							<includeScope>runtime</includeScope>
+						</configuration>
+					</execution>
+				</executions>
 			</plugin>
 		</plugins>
 	</build>
