@@ -34,12 +34,11 @@ jobs:
           test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-frontend-fuse/vfs-api/jacoco.xml
           test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-frontend-fuse/vfs-common/jacoco.xml
           test ! -f vfs-frontend-fuse/target/site/jacoco/jacoco.xml || cp vfs-frontend-fuse/target/site/jacoco/jacoco.xml coverage/vfs-frontend-fuse/vfs-frontend-fuse/jacoco.xml
-          touch coverage/vfs-frontend-fuse/.keep
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: coverage-vfs-frontend-fuse
           path: coverage/vfs-frontend-fuse
-          if-no-files-found: error
+          if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
 
   frontend-webdav:
     name: Verify vfs-frontend-webdav
@@ -62,15 +61,14 @@ jobs:
           test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-frontend-webdav/vfs-api/jacoco.xml
           test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-frontend-webdav/vfs-common/jacoco.xml
           test ! -f vfs-frontend-webdav/target/site/jacoco/jacoco.xml || cp vfs-frontend-webdav/target/site/jacoco/jacoco.xml coverage/vfs-frontend-webdav/vfs-frontend-webdav/jacoco.xml
-          touch coverage/vfs-frontend-webdav/.keep
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: coverage-vfs-frontend-webdav
           path: coverage/vfs-frontend-webdav
-          if-no-files-found: error
+          if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
 
-  middleware-crypto:
-    name: Verify vfs-middleware-crypto
+  middleware-uvf:
+    name: Verify vfs-middleware-uvf
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -83,23 +81,22 @@ jobs:
           cache: 'maven'
       - name: Verify reactor
         run: >
-          ./mvnw -B clean verify --also-make --projects vfs-middleware-crypto --no-transfer-progress
+          ./mvnw -B clean verify --also-make --projects vfs-middleware-uvf --no-transfer-progress
       - name: Prepare coverage artifact
         run: |
-          mkdir -p coverage/vfs-middleware-crypto/vfs-api coverage/vfs-middleware-crypto/vfs-common coverage/vfs-middleware-crypto/vfs-middleware-crypto
-          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-crypto/vfs-api/jacoco.xml
-          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-middleware-crypto/vfs-common/jacoco.xml
-          test ! -f vfs-middleware-crypto/target/site/jacoco/jacoco.xml || cp vfs-middleware-crypto/target/site/jacoco/jacoco.xml coverage/vfs-middleware-crypto/vfs-middleware-crypto/jacoco.xml
-          touch coverage/vfs-middleware-crypto/.keep
+          mkdir -p coverage/vfs-middleware-uvf/vfs-api coverage/vfs-middleware-uvf/vfs-common coverage/vfs-middleware-uvf/vfs-middleware-uvf
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf/vfs-api/jacoco.xml
+          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf/vfs-common/jacoco.xml
+          test ! -f vfs-middleware-uvf/target/site/jacoco/jacoco.xml || cp vfs-middleware-uvf/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf/vfs-middleware-uvf/jacoco.xml
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: coverage-vfs-middleware-crypto
-          path: coverage/vfs-middleware-crypto
-          if-no-files-found: error
+          name: coverage-vfs-middleware-uvf
+          path: coverage/vfs-middleware-uvf
+          if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
 
   sonarcloud:
     name: Run SonarCloud Analysis
-    needs: [frontend-fuse, frontend-webdav, middleware-crypto]
+    needs: [frontend-fuse, frontend-webdav, middleware-uvf]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,16 +117,8 @@ jobs:
           restore-keys: ${{ runner.os }}-sonar
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: coverage-vfs-frontend-fuse
-          path: coverage/vfs-frontend-fuse
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: coverage-vfs-frontend-webdav
-          path: coverage/vfs-frontend-webdav
-      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: coverage-vfs-middleware-crypto
-          path: coverage/vfs-middleware-crypto
+          pattern: coverage-* # unlike `name`, a pattern does not fail when a job uploaded no coverage artifact
+          path: coverage
       - name: Analyze
         run: >
           ./mvnw -B verify -DskipTests
