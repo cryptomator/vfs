@@ -21,6 +21,8 @@ import org.cryptomator.vfs.middleware.uvf.content.UvfVfsFile;
 import org.cryptomator.vfs.middleware.uvf.dir.DirectoryPathResolver;
 import org.cryptomator.vfs.middleware.uvf.dir.DirectoryPathResolver.ResolvedPath;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -49,6 +51,7 @@ import java.util.Set;
  */
 public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
+	private static final Logger LOG = LoggerFactory.getLogger(UvfFileSystem.class);
 	private static final String VAULT_CONFIG_PATH = "/vault.uvf";
 	private static final Set<PosixFilePermission> DEFAULT_PERMISSIONS = Set.of(); // let the delegate apply its defaults
 
@@ -402,7 +405,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	private VfsNodeMetadata toCleartextMetadata(ResolvedPath resolved, VfsNodeMetadata entryMetadata) throws IOException {
 		var type = nodeType(resolved, entryMetadata);
 		long size = switch (type) {
-			case FILE -> cleartextSize(entryMetadata.size());
+			case FILE -> cleartextSize(resolved, entryMetadata.size());
 			case DIRECTORY -> entryMetadata.size();
 			case SYMBOLIC_LINK -> symlinkTarget(resolved).getBytes(StandardCharsets.UTF_8).length;
 		};
@@ -418,14 +421,16 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		);
 	}
 
-	private long cleartextSize(long ciphertextSize) throws IOException {
+	// a damaged file must not take the whole directory listing down with it, so it is reported as empty; opening it still fails
+	private long cleartextSize(ResolvedPath resolved, long ciphertextSize) {
 		if (ciphertextSize == 0) {
 			return 0; // created but never written, the header is written on the first write
 		}
 		try {
 			return vault.cleartextSize(ciphertextSize);
 		} catch (IllegalArgumentException e) {
-			throw new IOException("Invalid ciphertext file size " + ciphertextSize, e);
+			LOG.warn("Reporting {} as empty, its ciphertext size {} is invalid: {}", resolved.contentsPath(), ciphertextSize, e.getMessage());
+			return 0;
 		}
 	}
 

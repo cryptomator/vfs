@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryNotEmptyException;
@@ -260,6 +261,29 @@ class UvfFileSystemTest {
 
 			assertThrows(NoSuchFileException.class, () -> fs.readNodeMetadata("/f"));
 			assertTrue(list("/").isEmpty());
+		}
+
+		@Test
+		@DisplayName("a file with an invalid ciphertext size is listed as empty and does not break the listing")
+		void invalidCiphertextSize() throws IOException {
+			writeFile("/good", "fine");
+			writeFile("/bad", "will be damaged");
+			var badCiphertextPath = ciphertext.paths().stream().filter(p -> p.endsWith(".uvf") && !p.endsWith("dir.uvf")).filter(p -> {
+				try {
+					return ciphertext.readNodeMetadata(p).size() > vault.ciphertextSize(4);
+				} catch (IOException e) {
+					throw new UncheckedIOException(e);
+				}
+			}).findFirst().orElseThrow();
+			ciphertext.truncate(badCiphertextPath, vault.headerSize() + 3); // a torn chunk
+
+			var entries = list("/");
+
+			assertEquals(Set.of("good", "bad"), entries.keySet());
+			assertEquals(4, entries.get("good").metadata().size());
+			assertEquals(0, entries.get("bad").metadata().size());
+			assertEquals(0, fs.readNodeMetadata("/bad").size());
+			assertThrows(IOException.class, () -> fs.openFile("/bad", READ));
 		}
 
 		@Test
