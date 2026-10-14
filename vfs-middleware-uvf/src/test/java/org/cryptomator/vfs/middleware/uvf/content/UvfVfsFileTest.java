@@ -1,14 +1,11 @@
 package org.cryptomator.vfs.middleware.uvf.content;
 
-import org.cryptomator.cryptolib.api.Cryptor;
-import org.cryptomator.cryptolib.api.CryptorProvider;
-import org.cryptomator.cryptolib.api.FileContentCryptor;
-import org.cryptomator.cryptolib.api.FileHeaderCryptor;
-import org.cryptomator.cryptolib.api.UVFMasterkey;
+import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.api.VfsTimes;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,34 +23,34 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@SuppressWarnings("deprecation")
 class UvfVfsFileTest {
 
-	private static final String SAMPLE_PAYLOAD = """
-			{
-			    "fileFormat": "AES-256-GCM-32k",
-			    "nameFormat": "AES-SIV-512-B64URL",
-			    "seeds": {
-			        "HDm38g": "ypeBEsobvcr6wjGzmiPcTaeG7_gUfE5yuYB3ha_uSLs",
-			        "gBryKw": "PiPoFgA5WUoziU9lZOGxNIu9egCI1CxKy3PurtWcAJ0",
-			        "QBsJFg": "Ln0sA6lQeuJl7PW1NWiFpTOTogKdJBOUmXJloaJa78Y"
-			    },
-			    "initialSeed": "HDm38i",
-			    "latestSeed": "QBsJFo",
-			    "kdf": "HKDF-SHA512",
-			    "kdfSalt": "NIlr89R7FhochyP4yuXZmDqCnQ0dBB3UZ2D-6oiIjr8"
-			}""";
-
-	private Cryptor cryptor;
-	private FileHeaderCryptor headerCryptor;
-	private FileContentCryptor contentCryptor;
+	private UvfUnlockedVault vault;
 
 	@BeforeEach
 	void setUp() {
-		var masterkey = UVFMasterkey.fromDecryptedPayload(SAMPLE_PAYLOAD);
-		cryptor = CryptorProvider.forScheme(CryptorProvider.Scheme.UVF_DRAFT).provide(masterkey, new SecureRandom());
-		headerCryptor = cryptor.fileHeaderCryptor();
-		contentCryptor = cryptor.fileContentCryptor();
+		vault = UvfUnlockedVault.create(new SecureRandom());
+	}
+
+	@AfterEach
+	void tearDown() {
+		vault.destroy();
+	}
+
+	private UvfVfsFile createNew(VfsFile backing) {
+		return new UvfVfsFile(backing, vault, vault.createFile());
+	}
+
+	private UvfVfsFile openExisting(VfsFile backing) throws IOException {
+		return UvfVfsFile.open(backing, vault);
+	}
+
+	private static byte[] readAll(VfsFile file, int size) throws IOException {
+		var buf = ByteBuffer.allocate(size);
+		while (buf.hasRemaining() && file.read(buf, buf.position()) >= 0) {
+			// keep reading
+		}
+		return Arrays.copyOf(buf.array(), buf.position());
 	}
 
 	@Test
@@ -62,44 +59,29 @@ class UvfVfsFileTest {
 		var backing = new InMemoryVfsFile();
 		byte[] cleartext = "Hello, World!".getBytes(StandardCharsets.UTF_8);
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
-			file.write(ByteBuffer.wrap(cleartext), 0);
+		try (var file = createNew(backing)) {
+			assertEquals(cleartext.length, file.write(ByteBuffer.wrap(cleartext), 0));
 		}
 
-		// ciphertext should be larger than cleartext (header + chunk overhead)
 		assertTrue(backing.size() > cleartext.length);
-
-		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
-			ByteBuffer dst = ByteBuffer.allocate(cleartext.length);
-			int read = file.read(dst, 0);
-			assertEquals(cleartext.length, read);
-			assertArrayEquals(cleartext, dst.array());
+		try (var file = openExisting(backing)) {
+			assertArrayEquals(cleartext, readAll(file, 100));
 		}
 	}
 
 	@Test
 	@DisplayName("write then read content spanning multiple chunks")
-	void writeAndReadMultiChunkContent() throws IOException {
+	void writeAndReadMultiChunk() throws IOException {
 		var backing = new InMemoryVfsFile();
-		// write 2.5 chunks worth of data
-		int dataSize = contentCryptor.cleartextChunkSize() * 2 + contentCryptor.cleartextChunkSize() / 2;
-		byte[] cleartext = new byte[dataSize];
-		Arrays.fill(cleartext, (byte) 0x42);
+		byte[] cleartext = new byte[vault.cleartextChunkSize() * 3 + 17];
+		new SecureRandom().nextBytes(cleartext);
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			file.write(ByteBuffer.wrap(cleartext), 0);
 		}
 
-		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
-			ByteBuffer dst = ByteBuffer.allocate(dataSize);
-			int totalRead = 0;
-			while (dst.hasRemaining()) {
-				int read = file.read(dst, totalRead);
-				if (read == -1) break;
-				totalRead += read;
-			}
-			assertEquals(dataSize, totalRead);
-			assertArrayEquals(cleartext, dst.array());
+		try (var file = openExisting(backing)) {
+			assertArrayEquals(cleartext, readAll(file, cleartext.length + 10));
 		}
 	}
 
@@ -109,14 +91,13 @@ class UvfVfsFileTest {
 		var backing = new InMemoryVfsFile();
 		byte[] cleartext = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".getBytes(StandardCharsets.UTF_8);
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			file.write(ByteBuffer.wrap(cleartext), 0);
 		}
 
-		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
+		try (var file = openExisting(backing)) {
 			ByteBuffer dst = ByteBuffer.allocate(10);
-			int read = file.read(dst, 5); // read "FGHIJKLMNO"
-			assertEquals(10, read);
+			assertEquals(10, file.read(dst, 5));
 			assertEquals("FGHIJKLMNO", new String(dst.array(), StandardCharsets.UTF_8));
 		}
 	}
@@ -125,34 +106,30 @@ class UvfVfsFileTest {
 	@DisplayName("read beyond end of file returns -1")
 	void readBeyondEof() throws IOException {
 		var backing = new InMemoryVfsFile();
-		byte[] cleartext = "short".getBytes(StandardCharsets.UTF_8);
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
-			file.write(ByteBuffer.wrap(cleartext), 0);
+		try (var file = createNew(backing)) {
+			file.write(ByteBuffer.wrap("short".getBytes(StandardCharsets.UTF_8)), 0);
 		}
 
-		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
-			ByteBuffer dst = ByteBuffer.allocate(10);
-			int read = file.read(dst, 1000);
-			assertEquals(-1, read);
+		try (var file = openExisting(backing)) {
+			assertEquals(-1, file.read(ByteBuffer.allocate(10), 1000));
+			assertEquals(-1, file.read(ByteBuffer.allocate(10), 5));
 		}
 	}
 
 	@Test
-	@DisplayName("sequential small writes append within a chunk")
+	@DisplayName("sequential small writes append within a chunk, gaps are zero-filled")
 	void sequentialSmallWrites() throws IOException {
 		var backing = new InMemoryVfsFile();
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			assertEquals(2, file.write(ByteBuffer.wrap("hi".getBytes(StandardCharsets.UTF_8)), 0));
 			assertEquals(1, file.write(ByteBuffer.wrap("!".getBytes(StandardCharsets.UTF_8)), 2));
-			assertEquals(1, file.write(ByteBuffer.wrap("?".getBytes(StandardCharsets.UTF_8)), 5)); // leaves a zero-filled gap
+			assertEquals(1, file.write(ByteBuffer.wrap("?".getBytes(StandardCharsets.UTF_8)), 5));
 		}
 
-		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
-			ByteBuffer dst = ByteBuffer.allocate(10);
-			assertEquals(6, file.read(dst, 0));
-			assertArrayEquals(new byte[]{'h', 'i', '!', 0, 0, '?'}, Arrays.copyOf(dst.array(), 6));
+		try (var file = openExisting(backing)) {
+			assertArrayEquals(new byte[]{'h', 'i', '!', 0, 0, '?'}, readAll(file, 10));
 		}
 	}
 
@@ -160,111 +137,119 @@ class UvfVfsFileTest {
 	@DisplayName("readMetadata reports cleartext size")
 	void readMetadataReportsCleartextSize() throws IOException {
 		var backing = new InMemoryVfsFile();
-		byte[] cleartext = new byte[contentCryptor.cleartextChunkSize() + 7];
+		byte[] cleartext = new byte[vault.cleartextChunkSize() + 7];
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			assertEquals(0, file.readMetadata().size());
+			assertEquals(VfsNodeType.FILE, file.readMetadata().type());
 			file.write(ByteBuffer.wrap(cleartext), 0);
 			assertEquals(cleartext.length, file.readMetadata().size());
 		}
-		assertTrue(backing.size() > cleartext.length);
+		try (var file = openExisting(backing)) {
+			assertEquals(cleartext.length, file.readMetadata().size());
+		}
 	}
 
 	@Test
 	@DisplayName("truncate mid-chunk keeps the remaining data readable")
 	void truncateMidChunk() throws IOException {
 		var backing = new InMemoryVfsFile();
-		byte[] cleartext = new byte[contentCryptor.cleartextChunkSize() * 2 + 100];
+		byte[] cleartext = new byte[vault.cleartextChunkSize() * 2 + 100];
 		new SecureRandom().nextBytes(cleartext);
-		int newSize = contentCryptor.cleartextChunkSize() + 50;
+		int newSize = vault.cleartextChunkSize() + 50;
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			file.write(ByteBuffer.wrap(cleartext), 0);
 			file.truncate(newSize);
 			assertEquals(newSize, file.readMetadata().size());
 		}
 
-		try (var file = UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor)) {
-			ByteBuffer dst = ByteBuffer.allocate(newSize + 10);
-			assertEquals(newSize, file.read(dst, 0));
-			assertArrayEquals(Arrays.copyOf(cleartext, newSize), Arrays.copyOf(dst.array(), newSize));
-			assertEquals(-1, file.read(ByteBuffer.allocate(1), newSize));
+		assertEquals(vault.ciphertextSize(newSize), backing.size());
+		try (var file = openExisting(backing)) {
+			assertEquals(newSize, file.readMetadata().size());
+			assertArrayEquals(Arrays.copyOf(cleartext, newSize), readAll(file, newSize + 10));
 		}
 	}
 
 	@Test
-	@DisplayName("truncate to zero leaves only the header")
+	@DisplayName("truncate to zero leaves a valid empty file")
 	void truncateToZero() throws IOException {
 		var backing = new InMemoryVfsFile();
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			file.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)), 0);
 			file.truncate(0);
 			assertEquals(0, file.readMetadata().size());
 		}
 
-		assertEquals(headerCryptor.headerSize(), backing.size());
+		assertEquals(vault.ciphertextSize(0), backing.size());
+		try (var file = openExisting(backing)) {
+			assertEquals(0, file.readMetadata().size());
+			assertEquals(-1, file.read(ByteBuffer.allocate(1), 0));
+		}
 	}
 
 	@Test
 	@DisplayName("truncate beyond end zero-extends")
 	void truncateExtends() throws IOException {
 		var backing = new InMemoryVfsFile();
-		int newSize = contentCryptor.cleartextChunkSize() + 3;
+		int newSize = vault.cleartextChunkSize() + 3;
 
-		try (var file = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
+		try (var file = createNew(backing)) {
 			file.write(ByteBuffer.wrap("hi".getBytes(StandardCharsets.UTF_8)), 0);
 			file.truncate(newSize);
 			assertEquals(newSize, file.readMetadata().size());
 
-			ByteBuffer dst = ByteBuffer.allocate(newSize);
-			assertEquals(newSize, file.read(dst, 0));
 			byte[] expected = new byte[newSize];
 			expected[0] = 'h';
 			expected[1] = 'i';
-			assertArrayEquals(expected, dst.array());
+			assertArrayEquals(expected, readAll(file, newSize));
 		}
 	}
 
 	@Test
-	@DisplayName("createNew writes header with UVF magic bytes")
+	@DisplayName("header is written on first write and starts with the UVF magic bytes")
 	void headerContainsMagicBytes() throws IOException {
 		var backing = new InMemoryVfsFile();
 
-		try (var ignored = UvfVfsFile.createNew(backing, headerCryptor, contentCryptor)) {
-			// just create the file
+		try (var file = createNew(backing)) {
+			assertEquals(0, backing.size());
+			file.write(ByteBuffer.wrap("x".getBytes(StandardCharsets.UTF_8)), 0);
 		}
 
-		assertTrue(backing.size() >= 4);
+		assertTrue(backing.size() >= vault.headerSize());
 		ByteBuffer header = ByteBuffer.allocate(4);
 		backing.read(header, 0);
 		assertArrayEquals(new byte[]{'u', 'v', 'f', 0x00}, header.array());
 	}
 
 	@Test
-	@DisplayName("openExisting fails on empty file")
-	void openExistingFailsOnEmptyFile() {
+	@DisplayName("open of an empty backing file yields a fresh empty file")
+	void openEmptyBacking() throws IOException {
 		var backing = new InMemoryVfsFile();
-		assertThrows(IOException.class, () -> UvfVfsFile.openExisting(backing, headerCryptor, contentCryptor));
+
+		try (var file = openExisting(backing)) {
+			assertEquals(0, file.readMetadata().size());
+		}
 	}
 
 	@Test
-	@DisplayName("cleartext size calculations are consistent")
-	void cleartextSizeCalculation() {
-		int headerSize = headerCryptor.headerSize();
-		int cleartextChunkSize = contentCryptor.cleartextChunkSize();
-		int ciphertextChunkSize = contentCryptor.ciphertextChunkSize();
+	@DisplayName("open fails on garbage")
+	void openFailsOnGarbage() throws IOException {
+		var backing = new InMemoryVfsFile();
+		byte[] garbage = new byte[vault.headerSize() + 10];
+		new SecureRandom().nextBytes(garbage);
+		backing.write(ByteBuffer.wrap(garbage), 0);
 
-		// one full chunk
-		long ciphertextPayload = ciphertextChunkSize;
-		long cleartext = contentCryptor.cleartextSize(ciphertextPayload);
-		assertEquals(cleartextChunkSize, cleartext);
+		assertThrows(IOException.class, () -> openExisting(backing));
+	}
 
-		// round-trip: cleartext -> ciphertext -> cleartext
-		long originalSize = 12345L;
-		long cipherSize = contentCryptor.ciphertextSize(originalSize);
-		long roundTripped = contentCryptor.cleartextSize(cipherSize);
-		assertEquals(originalSize, roundTripped);
+	@Test
+	@DisplayName("size calculations are consistent")
+	void sizeCalculation() {
+		for (long size : new long[]{0, 1, vault.cleartextChunkSize() - 1, vault.cleartextChunkSize(), vault.cleartextChunkSize() + 1, 12345L}) {
+			assertEquals(size, vault.cleartextSize(vault.ciphertextSize(size)));
+		}
 	}
 
 	/**
@@ -275,7 +260,7 @@ class UvfVfsFileTest {
 		private byte[] data = new byte[0];
 
 		@Override
-		public int read(ByteBuffer dst, long offset) throws IOException {
+		public int read(ByteBuffer dst, long offset) {
 			if (offset >= data.length) {
 				return -1;
 			}
@@ -285,7 +270,7 @@ class UvfVfsFileTest {
 		}
 
 		@Override
-		public int write(ByteBuffer src, long offset) throws IOException {
+		public int write(ByteBuffer src, long offset) {
 			int length = src.remaining();
 			int requiredSize = (int) offset + length;
 			if (requiredSize > data.length) {
@@ -306,13 +291,16 @@ class UvfVfsFileTest {
 		}
 
 		@Override
-		public void setTimes(VfsTimes times) {}
+		public void setTimes(VfsTimes times) {
+		}
 
 		@Override
-		public void force(boolean metadata) {}
+		public void force(boolean metadata) {
+		}
 
 		@Override
-		public void close() {}
+		public void close() {
+		}
 
 		int size() {
 			return data.length;

@@ -2,6 +2,8 @@
 
 Executable wiring for manual end-to-end testing.
 
+`VfsTestMain <vaultDir> <mountPoint> [fuseLibraryPath]` mounts the vault in `vaultDir`. If neither `vault.uvf` nor `d/` exist there, a new password-protected vault is created first; the throwaway recovery key is only logged. Existing vault files are never overwritten. The password comes from `VFS_VAULT_PASSWORD` or a console prompt.
+
 ```mermaid
 flowchart LR
     FUSE -->|VFS API| LogCleartext["Logging (cleartext)"]
