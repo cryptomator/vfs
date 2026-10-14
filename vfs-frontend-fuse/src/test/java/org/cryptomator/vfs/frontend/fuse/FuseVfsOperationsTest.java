@@ -26,6 +26,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.NoSuchFileException;
+import java.text.Normalizer;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -223,6 +224,23 @@ class FuseVfsOperationsTest {
 		}
 
 		@Test
+		@DisplayName("getattr reports the configured owner")
+		void getattrOwner() throws IOException {
+			var owned = new FuseVfsOperations(fs, errno, 501, 20, new FileNameTranscoder(Normalizer.Form.NFC, Normalizer.Form.NFC));
+			Mockito.doReturn(metadata(VfsNodeType.FILE, 1)).when(fs).readNodeMetadata("/f");
+			var stat = Mockito.mock(Stat.class);
+			Mockito.doReturn(Mockito.mock(TimeSpec.class)).when(stat).aTime();
+			Mockito.doReturn(Mockito.mock(TimeSpec.class)).when(stat).mTime();
+			Mockito.doReturn(Mockito.mock(TimeSpec.class)).when(stat).cTime();
+			Mockito.doReturn(Mockito.mock(TimeSpec.class)).when(stat).birthTime();
+
+			assertEquals(0, owned.getattr("/f", stat, null));
+
+			Mockito.verify(stat).setUid(501);
+			Mockito.verify(stat).setGid(20);
+		}
+
+		@Test
 		@DisplayName("getattr with FileInfo reads metadata from the handle")
 		void getattrViaHandle() throws IOException {
 			Mockito.doReturn(metadata(VfsNodeType.FILE, 5)).when(file).readMetadata();
@@ -236,6 +254,77 @@ class FuseVfsOperationsTest {
 
 			Mockito.verify(stat).setSize(5);
 			Mockito.verify(fs, Mockito.never()).readNodeMetadata(Mockito.anyString());
+		}
+	}
+
+	@Nested
+	@DisplayName("name normalization")
+	class NameNormalization {
+
+		private static final String NFC = "/Schäferfest";
+		private static final String NFD = "/Schäferfest";
+
+		private FuseVfsOperations macOps;
+
+		@BeforeEach
+		void macTranscoder() {
+			macOps = new FuseVfsOperations(fs, errno, 0, 0, new FileNameTranscoder(Normalizer.Form.NFD, Normalizer.Form.NFC));
+		}
+
+		@Test
+		@DisplayName("paths from FUSE reach the VFS in NFC regardless of their form")
+		void incomingNfc() throws IOException {
+			Mockito.doReturn(metadata(VfsNodeType.DIRECTORY, 0)).when(fs).readNodeMetadata(NFC);
+
+			assertEquals(0, macOps.access(NFD, 0));
+			assertEquals(0, macOps.access(NFC, 0));
+			assertEquals(0, macOps.mkdir(NFD + "/sub", 0755));
+			assertEquals(0, macOps.rename(NFD, NFC + "2", 0));
+
+			Mockito.verify(fs, Mockito.times(2)).checkAccess(NFC, Set.of());
+			Mockito.verify(fs).createDirectory(NFC + "/sub", org.cryptomator.jfuse.api.FileModes.toPermissions(0755));
+			Mockito.verify(fs).rename(NFC, NFC + "2", true);
+			Mockito.verify(fs, Mockito.never()).checkAccess(NFD, Set.of());
+		}
+
+		@Test
+		@DisplayName("listing names go out in the FUSE form")
+		void outgoingForm() throws IOException {
+			Mockito.doReturn(metadata(VfsNodeType.DIRECTORY, 0)).when(fs).readNodeMetadata("/");
+			Mockito.doReturn(stream(List.of(new VfsDirectoryEntry(NFC.substring(1), metadata(VfsNodeType.FILE, 1))))).when(fs).openDirectory("/");
+			var names = new ArrayList<String>();
+			DirFiller filler = (name, statFiller, offset, flags) -> {
+				names.add(name);
+				return 0;
+			};
+
+			assertEquals(0, macOps.readdir("/", filler, 0, Mockito.mock(FileInfo.class), 0));
+
+			assertEquals(List.of(".", "..", NFD.substring(1)), names);
+			assertTrue(Normalizer.isNormalized(names.get(2), Normalizer.Form.NFD));
+		}
+
+		@Test
+		@DisplayName("symlink targets are transcoded in both directions")
+		void symlinkTargets() throws IOException {
+			Mockito.doReturn(NFC).when(fs).readSymbolicLink("/link");
+			var buf = ByteBuffer.allocate(64);
+
+			assertEquals(0, macOps.readlink("/link", buf, 64));
+			assertEquals(0, macOps.symlink(NFD, "/link2"));
+
+			var target = new String(buf.array(), 0, NFD.getBytes(StandardCharsets.UTF_8).length, StandardCharsets.UTF_8);
+			assertEquals(NFD, target);
+			Mockito.verify(fs).createSymbolicLink("/link2", NFC);
+		}
+
+		@Test
+		@DisplayName("platform transcoder is NFD towards FUSE only on macOS")
+		void platformDefault() {
+			var transcoder = FileNameTranscoder.forCurrentPlatform();
+			var mac = System.getProperty("os.name", "").toLowerCase().contains("mac");
+			assertEquals(mac ? Normalizer.Form.NFD : Normalizer.Form.NFC, transcoder.fuseForm());
+			assertEquals(Normalizer.Form.NFC, transcoder.vfsForm());
 		}
 	}
 

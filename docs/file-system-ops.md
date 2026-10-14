@@ -49,6 +49,7 @@ Hard links, byte-range locks, server-side copy, preallocation and hole seeking, 
 
 ## Frontend quirks worth remembering
 
+- **macFUSE and Unicode normalization.** macOS passes names in NFD; macFUSE keys kernel nodes by exact name bytes, so an NFC name from `readdir` and an NFD lookup of the same file yield two inode numbers and Finder reloads the listing on every selection. The FUSE frontend returns NFD on macOS and normalizes to NFC towards the VFS. cryptolib itself normalizes names to NFC before encryption.
 - **FUSE `symlink` argument order.** libfuse passes the link content first and the link path second. jfuse's parameter names (`linkname`, `target`) suggest the opposite.
 - **libfuse3 readdirplus** is only enabled when the `init` callback is wired, so `INIT` must be in jfuse's supported operation set.
 - **macFUSE** is a libfuse 2.x API without readdirplus; **FUSE-T** ignores `access`, never forwards locks and cannot set atime and mtime independently.

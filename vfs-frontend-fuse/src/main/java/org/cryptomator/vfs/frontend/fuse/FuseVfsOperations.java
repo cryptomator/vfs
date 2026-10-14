@@ -31,9 +31,11 @@ import java.nio.file.AccessMode;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
+import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
 import java.nio.file.NotLinkException;
+import java.nio.file.Path;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -56,12 +58,47 @@ public final class FuseVfsOperations implements FuseOperations {
 
 	private final VfsFileSystem fileSystem;
 	private final Errno errno;
+	private final int uid;
+	private final int gid;
+	private final FileNameTranscoder names;
 	private final ConcurrentMap<Long, VfsFile> openFiles = new ConcurrentHashMap<>();
 	private final AtomicLong nextFileHandle = new AtomicLong(1L);
 
+	/**
+	 * Creates an adapter that reports all nodes as owned by the current process user and transcodes names for the current platform.
+	 *
+	 * @param fileSystem the file system to expose
+	 * @param errno the platform's error codes
+	 */
 	public FuseVfsOperations(VfsFileSystem fileSystem, Errno errno) {
+		this(fileSystem, errno, currentUserId("uid"), currentUserId("gid"), FileNameTranscoder.forCurrentPlatform());
+	}
+
+	/**
+	 * Creates an adapter that reports all nodes as owned by the given user and group, since the VFS API has no notion of ownership.
+	 *
+	 * @param fileSystem the file system to expose
+	 * @param errno the platform's error codes
+	 * @param uid owner reported for every node
+	 * @param gid group reported for every node
+	 * @param names translates names between the FUSE host's and the VFS's Unicode normalization forms
+	 */
+	public FuseVfsOperations(VfsFileSystem fileSystem, Errno errno, int uid, int gid, FileNameTranscoder names) {
 		this.fileSystem = fileSystem;
 		this.errno = errno;
+		this.uid = uid;
+		this.gid = gid;
+		this.names = names;
+	}
+
+	// the JDK has no portable way to ask for the current uid/gid; the home directory's owner is the next best thing, 0 where there is no "unix" view
+	private static int currentUserId(String attribute) {
+		try {
+			return (Integer) Files.getAttribute(Path.of(System.getProperty("user.home")), "unix:" + attribute);
+		} catch (IOException | UnsupportedOperationException | IllegalArgumentException e) {
+			LOG.warn("Cannot determine {} of the current user, reporting 0", attribute);
+			return 0;
+		}
 	}
 
 	@Override
@@ -117,9 +154,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int access(String path, int mask) {
+	public int access(String fusePath, int mask) {
 		try {
-			fileSystem.checkAccess(path, toAccessModes(mask));
+			fileSystem.checkAccess(names.toVfs(fusePath), toAccessModes(mask));
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -127,10 +164,10 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int getattr(String path, Stat stat, @Nullable FileInfo fi) {
+	public int getattr(String fusePath, Stat stat, @Nullable FileInfo fi) {
 		try {
 			var file = openFile(fi);
-			applyNodeMetadata(stat, file != null ? file.readMetadata() : fileSystem.readNodeMetadata(path));
+			applyNodeMetadata(stat, file != null ? file.readMetadata() : fileSystem.readNodeMetadata(names.toVfs(fusePath)));
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -138,9 +175,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int statfs(String path, Statvfs statvfs) {
+	public int statfs(String fusePath, Statvfs statvfs) {
 		try {
-			VfsMetadata space = fileSystem.readVfsMetadata(path);
+			VfsMetadata space = fileSystem.readVfsMetadata(names.toVfs(fusePath));
 			statvfs.setBsize(space.blockSize());
 			statvfs.setFrsize(space.blockSize());
 			statvfs.setBlocks(space.totalBlocks());
@@ -154,9 +191,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int mkdir(String path, int mode) {
+	public int mkdir(String fusePath, int mode) {
 		try {
-			fileSystem.createDirectory(path, FileModes.toPermissions(mode));
+			fileSystem.createDirectory(names.toVfs(fusePath), FileModes.toPermissions(mode));
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -164,9 +201,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int opendir(String path, FileInfo fi) {
+	public int opendir(String fusePath, FileInfo fi) {
 		try {
-			if (fileSystem.readNodeMetadata(path).type() != VfsNodeType.DIRECTORY) {
+			if (fileSystem.readNodeMetadata(names.toVfs(fusePath)).type() != VfsNodeType.DIRECTORY) {
 				return -errno.enotdir();
 			}
 			return 0;
@@ -176,8 +213,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int readdir(String path, DirFiller filler, long offset, FileInfo fi, int flags) {
+	public int readdir(String fusePath, DirFiller filler, long offset, FileInfo fi, int flags) {
 		try {
+			var path = names.toVfs(fusePath);
 			boolean fillPlus = (flags & FuseOperations.FUSE_READDIR_PLUS) != 0;
 			fillEntry(filler, ".", fileSystem.readNodeMetadata(path), fillPlus);
 			fillEntry(filler, "..", fileSystem.readNodeMetadata(parentPath(path)), fillPlus);
@@ -200,9 +238,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int create(String path, int mode, FileInfo fi) {
+	public int create(String fusePath, int mode, FileInfo fi) {
 		try {
-			var file = fileSystem.createFile(path, fi.getOpenFlags(), FileModes.toPermissions(mode));
+			var file = fileSystem.createFile(names.toVfs(fusePath), fi.getOpenFlags(), FileModes.toPermissions(mode));
 			return registerOpenFile(file, fi);
 		} catch (IOException e) {
 			return toErrno(e);
@@ -210,9 +248,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int open(String path, FileInfo fi) {
+	public int open(String fusePath, FileInfo fi) {
 		try {
-			var file = fileSystem.openFile(path, fi.getOpenFlags());
+			var file = fileSystem.openFile(names.toVfs(fusePath), fi.getOpenFlags());
 			return registerOpenFile(file, fi);
 		} catch (IOException e) {
 			return toErrno(e);
@@ -256,13 +294,13 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int truncate(String path, long size, @Nullable FileInfo fi) {
+	public int truncate(String fusePath, long size, @Nullable FileInfo fi) {
 		try {
 			var file = openFile(fi);
 			if (file != null) {
 				file.truncate(size);
 			} else {
-				fileSystem.truncate(path, size);
+				fileSystem.truncate(names.toVfs(fusePath), size);
 			}
 			return 0;
 		} catch (IOException e) {
@@ -295,8 +333,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int unlink(String path) {
+	public int unlink(String fusePath) {
 		try {
+			var path = names.toVfs(fusePath);
 			if (fileSystem.readNodeMetadata(path).type() == VfsNodeType.DIRECTORY) {
 				return -errno.eisdir();
 			}
@@ -308,8 +347,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int rmdir(String path) {
+	public int rmdir(String fusePath) {
 		try {
+			var path = names.toVfs(fusePath);
 			if (fileSystem.readNodeMetadata(path).type() != VfsNodeType.DIRECTORY) {
 				return -errno.enotdir();
 			}
@@ -326,7 +366,7 @@ public final class FuseVfsOperations implements FuseOperations {
 			return -errno.einval(); // RENAME_EXCHANGE and unknown flags are not supported
 		}
 		try {
-			fileSystem.rename(oldpath, newpath, (flags & RENAME_NOREPLACE) == 0);
+			fileSystem.rename(names.toVfs(oldpath), names.toVfs(newpath), (flags & RENAME_NOREPLACE) == 0);
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -334,9 +374,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int chmod(String path, int mode, @Nullable FileInfo fi) {
+	public int chmod(String fusePath, int mode, @Nullable FileInfo fi) {
 		try {
-			fileSystem.setPermissions(path, FileModes.toPermissions(mode));
+			fileSystem.setPermissions(names.toVfs(fusePath), FileModes.toPermissions(mode));
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -344,14 +384,14 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int utimens(String path, TimeSpec atime, TimeSpec mtime, @Nullable FileInfo fi) {
+	public int utimens(String fusePath, TimeSpec atime, TimeSpec mtime, @Nullable FileInfo fi) {
 		try {
 			var times = new VfsTimes(atime.getOptional().orElse(null), mtime.getOptional().orElse(null), null);
 			var file = openFile(fi);
 			if (file != null) {
 				file.setTimes(times);
 			} else {
-				fileSystem.setTimes(path, times);
+				fileSystem.setTimes(names.toVfs(fusePath), times);
 			}
 			return 0;
 		} catch (IOException e) {
@@ -360,9 +400,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int readlink(String path, ByteBuffer buf, long len) {
+	public int readlink(String fusePath, ByteBuffer buf, long len) {
 		try {
-			var target = fileSystem.readSymbolicLink(path).getBytes(StandardCharsets.UTF_8);
+			var target = names.toFuse(fileSystem.readSymbolicLink(names.toVfs(fusePath))).getBytes(StandardCharsets.UTF_8);
 			int length = Math.toIntExact(Math.min(target.length, len - 1)); // leave room for the terminating NUL, truncate if necessary
 			buf.put(target, 0, length).put((byte) 0);
 			return 0;
@@ -375,7 +415,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	@Override
 	public int symlink(String target, String linkPath) {
 		try {
-			fileSystem.createSymbolicLink(linkPath, target);
+			fileSystem.createSymbolicLink(names.toVfs(linkPath), names.toVfs(target));
 			return 0;
 		} catch (IOException e) {
 			return toErrno(e);
@@ -383,9 +423,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int getxattr(String path, String name, ByteBuffer value) {
+	public int getxattr(String fusePath, String name, ByteBuffer value) {
 		try {
-			var data = fileSystem.getXattr(path, name);
+			var data = fileSystem.getXattr(names.toVfs(fusePath), name);
 			int size = data.remaining();
 			if (value.capacity() == 0) {
 				return size;
@@ -401,7 +441,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int setxattr(String path, String name, ByteBuffer value, int flags) {
+	public int setxattr(String fusePath, String name, ByteBuffer value, int flags) {
 		var policy = switch (flags & (XATTR_CREATE | XATTR_REPLACE)) {
 			case XATTR_CREATE -> VfsXattrPolicy.CREATE_ONLY;
 			case XATTR_REPLACE -> VfsXattrPolicy.REPLACE_ONLY;
@@ -412,7 +452,7 @@ public final class FuseVfsOperations implements FuseOperations {
 			return -errno.einval();
 		}
 		try {
-			fileSystem.setXattr(path, name, value, policy);
+			fileSystem.setXattr(names.toVfs(fusePath), name, value, policy);
 			return 0;
 		} catch (IOException e) {
 			return toXattrErrno(e);
@@ -420,11 +460,11 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int listxattr(String path, ByteBuffer list) {
+	public int listxattr(String fusePath, ByteBuffer list) {
 		try {
-			var names = fileSystem.listXattrs(path);
+			var attributeNames = fileSystem.listXattrs(names.toVfs(fusePath));
 			int size = 0;
-			for (var name : names) {
+			for (var name : attributeNames) {
 				size += name.getBytes(StandardCharsets.UTF_8).length + 1;
 			}
 			if (list.capacity() == 0) {
@@ -433,7 +473,7 @@ public final class FuseVfsOperations implements FuseOperations {
 			if (size > list.remaining()) {
 				return -errno.erange();
 			}
-			for (var name : names) {
+			for (var name : attributeNames) {
 				list.put(name.getBytes(StandardCharsets.UTF_8)).put((byte) 0);
 			}
 			return size;
@@ -443,9 +483,9 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	@Override
-	public int removexattr(String path, String name) {
+	public int removexattr(String fusePath, String name) {
 		try {
-			fileSystem.removeXattr(path, name);
+			fileSystem.removeXattr(names.toVfs(fusePath), name);
 			return 0;
 		} catch (IOException e) {
 			return toXattrErrno(e);
@@ -489,7 +529,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	private void fillEntry(DirFiller filler, VfsDirectoryEntry entry, boolean fillPlus) throws IOException {
-		fillEntry(filler, entry.name(), entry.metadata(), fillPlus);
+		fillEntry(filler, names.toFuse(entry.name()), entry.metadata(), fillPlus);
 	}
 
 	private void fillEntry(DirFiller filler, String name, VfsNodeMetadata metadata, boolean fillPlus) throws IOException {
@@ -504,6 +544,8 @@ public final class FuseVfsOperations implements FuseOperations {
 	}
 
 	private void applyNodeMetadata(Stat stat, VfsNodeMetadata metadata) {
+		stat.setUid(uid);
+		stat.setGid(gid);
 		stat.setPermissions(metadata.permissions());
 		stat.setSize(metadata.size());
 		stat.setNLink((short) (metadata.type() == VfsNodeType.DIRECTORY ? 2 : 1));

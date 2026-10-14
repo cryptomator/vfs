@@ -20,6 +20,7 @@ import java.security.SecureRandom;
 import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -29,6 +30,7 @@ public final class VfsTestMain {
 
 	private static final Logger LOG = LoggerFactory.getLogger(VfsTestMain.class);
 	private static final String PASSWORD_ENV = "VFS_VAULT_PASSWORD";
+	private static final String MOUNT_FLAGS_ENV = "VFS_MOUNT_FLAGS";
 	private static final String VAULT_CONFIG_FILE = "vault.uvf";
 	private static final String VAULT_DATA_DIR = "d";
 
@@ -64,7 +66,7 @@ public final class VfsTestMain {
 			 var fuse = builder.build(new FuseVfsOperations(new LoggingVfsFileSystem("cleartext", uvfMiddleware), builder.errno()))) {
 			Runtime.getRuntime().addShutdownHook(new Thread(() -> closeQuietly(fuse), "vfs-test-shutdown"));
 			LOG.info("Mounting {} at {}", vaultDir, mountPoint);
-			fuse.mount("vfs-test", mountPoint, "-s");
+			fuse.mount("vfs-test", mountPoint, mountFlags());
 			LOG.info("Enter anything to unmount...");
 			System.in.read();
 		} catch (FuseMountFailedException | TimeoutException e) {
@@ -92,6 +94,20 @@ public final class VfsTestMain {
 		vault.setRecoveryKey((ECPublicKey) recoveryKeyPair.getPublic());
 		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", Base64.getEncoder().encodeToString(recoveryKeyPair.getPrivate().getEncoded()));
 		return UvfFileSystem.initialize(delegate, vault);
+	}
+
+	// single-threaded; on macOS the same macFUSE flags as Cryptomator (kernel-side permission checks, no AppleDouble sidecars), which cut Finder's
+	// per-interaction call storm by roughly 8x; additional flags can be supplied via the environment
+	private static String[] mountFlags() {
+		var flags = new java.util.ArrayList<>(List.of("-s"));
+		if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("mac")) {
+			flags.addAll(List.of("-oatomic_o_trunc", "-oauto_xattr", "-oauto_cache", "-onoappledouble", "-odefault_permissions"));
+		}
+		var extra = System.getenv(MOUNT_FLAGS_ENV);
+		if (extra != null && !extra.isBlank()) {
+			flags.addAll(List.of(extra.trim().split("\\s+")));
+		}
+		return flags.toArray(String[]::new);
 	}
 
 	private static String readPassword() {
