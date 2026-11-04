@@ -52,6 +52,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	private static final long DEFAULT_BLOCK_SIZE = 4096L;
 	private static final String UNIX_VIEW = "unix";
 	private static final String USER_VIEW = "user";
+	private static final XattrNames XATTR_NAMES = XattrNames.forCurrentPlatform();
 
 	private final Path root;
 	private final FileStore fileStore;
@@ -211,25 +212,27 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 	@Override
 	public List<String> listXattrs(String path) throws IOException {
-		return List.copyOf(xattrView(path).list());
+		return xattrView(path).list().stream().map(XATTR_NAMES::toVfs).toList();
 	}
 
 	@Override
 	public ByteBuffer getXattr(String path, String name) throws IOException {
 		var view = xattrView(path);
-		if (!view.list().contains(name)) {
+		var viewName = XATTR_NAMES.toView(name);
+		if (!view.list().contains(viewName)) {
 			throw new NoSuchFileException(path, null, "no such xattr: " + name);
 		}
-		var buf = ByteBuffer.allocate(view.size(name));
-		view.read(name, buf);
+		var buf = ByteBuffer.allocate(view.size(viewName));
+		view.read(viewName, buf);
 		return buf.flip().asReadOnlyBuffer();
 	}
 
 	@Override
 	public void setXattr(String path, String name, ByteBuffer value, VfsXattrPolicy policy) throws IOException {
 		var view = xattrView(path);
+		var viewName = XATTR_NAMES.toView(name);
 		if (policy != VfsXattrPolicy.CREATE_OR_REPLACE) {
-			var exists = view.list().contains(name);
+			var exists = view.list().contains(viewName);
 			if (exists && policy == VfsXattrPolicy.CREATE_ONLY) {
 				throw new FileAlreadyExistsException(path, null, "xattr exists: " + name);
 			}
@@ -237,16 +240,17 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 				throw new NoSuchFileException(path, null, "no such xattr: " + name);
 			}
 		}
-		view.write(name, value);
+		view.write(viewName, value);
 	}
 
 	@Override
 	public void removeXattr(String path, String name) throws IOException {
 		var view = xattrView(path);
-		if (!view.list().contains(name)) {
+		var viewName = XATTR_NAMES.toView(name);
+		if (!view.list().contains(viewName)) {
 			throw new NoSuchFileException(path, null, "no such xattr: " + name);
 		}
-		view.delete(name);
+		view.delete(viewName);
 	}
 
 	private Path resolve(String path) throws IOException {
