@@ -181,6 +181,52 @@ class NioVfsFileSystemTest {
 		}
 
 		@Test
+		@DisplayName("handle reports last known metadata with the live size after delete")
+		void metadataAfterDelete() throws IOException {
+			writeFile("/f", "hello");
+			try (var file = fs.openFile("/f", Set.of(StandardOpenOption.WRITE))) {
+				var before = file.readMetadata();
+				fs.deleteFile("/f");
+				file.write(ByteBuffer.wrap("world!".getBytes(StandardCharsets.UTF_8)), 5);
+
+				var after = file.readMetadata();
+				assertEquals(11, after.size());
+				assertEquals(before.fileId(), after.fileId());
+				assertEquals(before.creationTime(), after.creationTime());
+			}
+		}
+
+		@Test
+		@DisplayName("handle follows a rename of the file")
+		void followsRename() throws IOException {
+			writeFile("/f", "hello");
+			var mtime = Instant.parse("2020-01-02T03:04:05Z");
+			try (var file = fs.openFile("/f", Set.of(StandardOpenOption.WRITE))) {
+				fs.rename("/f", "/g", false);
+				file.write(ByteBuffer.wrap("world!".getBytes(StandardCharsets.UTF_8)), 5);
+				file.setTimes(new VfsTimes(null, mtime, null));
+
+				assertEquals(11, file.readMetadata().size());
+				assertEquals(mtime, file.readMetadata().lastModifiedTime());
+			}
+			assertEquals(mtime, fs.readNodeMetadata("/g").lastModifiedTime());
+		}
+
+		@Test
+		@DisplayName("handle follows a rename of a parent directory")
+		void followsParentRename() throws IOException {
+			fs.createDirectory("/d", RWX);
+			fs.createDirectory("/d/sub", RWX);
+			writeFile("/d/sub/f", "hello");
+			var mtime = Instant.parse("2020-01-02T03:04:05Z");
+			try (var file = fs.openFile("/d/sub/f", Set.of(StandardOpenOption.READ))) {
+				fs.rename("/d", "/e", false);
+				file.setTimes(new VfsTimes(null, mtime, null));
+			}
+			assertEquals(mtime, fs.readNodeMetadata("/e/sub/f").lastModifiedTime());
+		}
+
+		@Test
 		@DisplayName("setTimes updates mtime")
 		void setTimes() throws IOException {
 			writeFile("/f", "hello");

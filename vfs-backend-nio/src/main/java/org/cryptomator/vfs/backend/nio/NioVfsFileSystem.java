@@ -43,6 +43,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Simple mirrored filesystem backend backed by Java NIO.
@@ -59,6 +62,8 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	private final boolean posix;
 	private final boolean unix;
 	private final VfsCapabilities capabilities;
+	private final Set<NioOpenFile> openFiles = ConcurrentHashMap.newKeySet(); // handles whose paths must follow a rename
+	private final ReadWriteLock renameLock = new ReentrantReadWriteLock(); // read: open and register a handle, write: move and re-point handles
 
 	/**
 	 * Mirrors the given directory, probing the volume for case sensitivity.
@@ -152,17 +157,33 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 	@Override
 	public VfsFile openFile(String path, Set<StandardOpenOption> options) throws IOException {
-		var node = resolve(path);
-		return new NioOpenFile(node, FileChannel.open(node, normalizeOpenOptions(options)));
+		return open(resolve(path), normalizeOpenOptions(options));
 	}
 
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
-		var node = resolve(path);
 		var openOptions = normalizeOpenOptions(options);
 		openOptions.add(StandardOpenOption.WRITE); // CREATE is ignored by NIO on read-only channels
 		openOptions.add(options.contains(StandardOpenOption.CREATE_NEW) ? StandardOpenOption.CREATE_NEW : StandardOpenOption.CREATE);
-		return new NioOpenFile(node, FileChannel.open(node, openOptions, posixAttributes(permissions)));
+		return open(resolve(path), openOptions, posixAttributes(permissions));
+	}
+
+	// opened and registered under the read lock, so a concurrent rename cannot slip in between and leave the handle with a stale path
+	private NioOpenFile open(Path node, Set<StandardOpenOption> options, FileAttribute<?>... attrs) throws IOException {
+		renameLock.readLock().lock();
+		try {
+			var channel = FileChannel.open(node, options, attrs);
+			try {
+				var file = new NioOpenFile(node, channel, readNodeMetadata(node));
+				openFiles.add(file);
+				return file;
+			} catch (IOException e) {
+				channel.close();
+				throw e;
+			}
+		} finally {
+			renameLock.readLock().unlock();
+		}
 	}
 
 	@Override
@@ -185,7 +206,8 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	 * {@inheritDoc}
 	 *
 	 * @implNote Without {@code replaceExisting} this is not atomic: NIO offers no {@code RENAME_NOREPLACE}, so it is an existence check followed by
-	 * {@code rename(2)}, and a node created at the target in between is overwritten.
+	 * {@code rename(2)}, and a node created at the target in between is overwritten. Open handles on the moved node and below it are re-pointed to
+	 * their new paths, since NIO cannot stat a channel.
 	 */
 	@Override
 	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
@@ -198,15 +220,21 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 			}
 			return;
 		}
-		if (replaceExisting) {
-			// rename(2) replaces atomically but reports ENOTEMPTY as a generic FileSystemException, hence the pre-check
-			if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS) && !isEmptyDirectory(target)) {
-				throw new DirectoryNotEmptyException(targetPath);
+		renameLock.writeLock().lock();
+		try {
+			if (replaceExisting) {
+				// rename(2) replaces atomically but reports ENOTEMPTY as a generic FileSystemException, hence the pre-check
+				if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS) && !isEmptyDirectory(target)) {
+					throw new DirectoryNotEmptyException(targetPath);
+				}
+				Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+			} else {
+				// NIO has no RENAME_NOREPLACE; this is an existence check followed by rename(2)
+				Files.move(source, target);
 			}
-			Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
-		} else {
-			// NIO has no RENAME_NOREPLACE; this is an existence check followed by rename(2)
-			Files.move(source, target);
+			openFiles.forEach(file -> file.moved(source, target));
+		} finally {
+			renameLock.writeLock().unlock();
 		}
 	}
 
@@ -460,12 +488,23 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 	private final class NioOpenFile implements VfsFile {
 
-		private final Path node;
 		private final FileChannel channel;
+		private volatile Path node; // follows renames, see NioVfsFileSystem#rename
+		private volatile VfsNodeMetadata lastKnown; // reported once the path is gone, with the live size from the channel
 
-		NioOpenFile(Path node, FileChannel channel) {
+		NioOpenFile(Path node, FileChannel channel, VfsNodeMetadata metadata) {
 			this.node = node;
 			this.channel = channel;
+			this.lastKnown = metadata;
+		}
+
+		void moved(Path from, Path to) {
+			var current = node;
+			if (current.equals(from)) {
+				node = to;
+			} else if (current.startsWith(from)) {
+				node = to.resolve(from.relativize(current));
+			}
 		}
 
 		@Override
@@ -480,8 +519,15 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 		@Override
 		public VfsNodeMetadata readMetadata() throws IOException {
-			// NIO cannot fstat a channel, so this goes via the path and may fail after a rename
-			return readNodeMetadata(node);
+			// NIO cannot fstat a channel; after an unlink the inode is unreachable by path, so the last known metadata with the live size is the best available
+			try {
+				var metadata = readNodeMetadata(node);
+				lastKnown = metadata;
+				return metadata;
+			} catch (NoSuchFileException _) {
+				var stale = lastKnown;
+				return new VfsNodeMetadata(stale.type(), channel.size(), stale.fileId(), stale.permissions(), stale.lastModifiedTime(), stale.lastAccessTime(), stale.changeTime(), stale.creationTime());
+			}
 		}
 
 		@Override
@@ -501,6 +547,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 		@Override
 		public void close() throws IOException {
+			openFiles.remove(this);
 			channel.close();
 		}
 	}
