@@ -289,6 +289,13 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		delegate.deleteDirectory(resolved.entryPath());
 	}
 
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @implNote Replacing a target is only atomic for a file replacing a file. Directories and symbolic links are directories in the ciphertext, which
+	 * no delegate can replace in one step, so in every other combination the target is deleted before the move: a concurrent lookup may see it missing,
+	 * and a failing move leaves it deleted.
+	 */
 	@Override
 	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
 		if (targetPath.startsWith(sourcePath + "/")) {
@@ -296,19 +303,34 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 			throw new FileSystemException(sourcePath, targetPath, "Cannot move a directory into itself");
 		}
 		var source = pathResolver.resolve(sourcePath);
+		var sourceType = nodeType(source, delegate.readNodeMetadata(source.entryPath())); // fails before anything is touched if the source is missing
+		if (sourcePath.equals(targetPath)) {
+			return;
+		}
 		var target = pathResolver.resolve(targetPath);
-		var targetMetadata = replaceExisting ? metadataOrNull(target.entryPath()) : null;
-		if (targetMetadata != null && targetMetadata.type() == VfsNodeType.DIRECTORY) {
-			// directory and symlink entries are ciphertext directories with content, which the delegate can never replace; remove them first
+		var targetMetadata = replaceExisting ? metadataOrNull(target.entryPath()) : null; // without the flag the delegate's own no-replace check stays atomic
+		if (targetMetadata != null) {
 			switch (nodeType(target, targetMetadata)) {
 				case DIRECTORY -> {
-					if (nodeType(source, delegate.readNodeMetadata(source.entryPath())) != VfsNodeType.DIRECTORY) {
+					if (sourceType != VfsNodeType.DIRECTORY) {
 						throw new FileSystemException(sourcePath, targetPath, "Is a directory");
 					}
-					deleteDirectory(targetPath);
+					deleteDirectory(targetPath); // refuses non-empty directories
 				}
-				case SYMBOLIC_LINK -> deleteSymbolicLink(target);
-				case FILE -> throw new AssertionError();
+				case SYMBOLIC_LINK -> {
+					if (sourceType == VfsNodeType.DIRECTORY) {
+						throw new FileSystemException(sourcePath, targetPath, "Not a directory");
+					}
+					deleteSymbolicLink(target);
+				}
+				case FILE -> {
+					if (sourceType == VfsNodeType.DIRECTORY) {
+						throw new FileSystemException(sourcePath, targetPath, "Not a directory");
+					}
+					if (sourceType == VfsNodeType.SYMBOLIC_LINK) {
+						delegate.deleteFile(target.contentsPath()); // file over file is left to the delegate's atomic replace
+					}
+				}
 			}
 		}
 		try {

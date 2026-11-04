@@ -366,6 +366,63 @@ class UvfFileSystemTest {
 		}
 
 		@Test
+		@DisplayName("a missing source leaves the target untouched")
+		void missingSource() throws IOException {
+			fs.createDirectory("/dst", Set.of());
+			fs.createSymbolicLink("/link", "t");
+
+			assertThrows(NoSuchFileException.class, () -> fs.rename("/missing", "/dst", true));
+			assertThrows(NoSuchFileException.class, () -> fs.rename("/missing", "/link", true));
+
+			assertEquals(VfsNodeType.DIRECTORY, fs.readNodeMetadata("/dst").type());
+			assertEquals("t", fs.readSymbolicLink("/link"));
+		}
+
+		@Test
+		@DisplayName("renaming onto itself keeps the node")
+		void ontoItself() throws IOException {
+			fs.createDirectory("/d", Set.of());
+			writeFile("/d/f", "x");
+			fs.createSymbolicLink("/link", "t");
+
+			fs.rename("/d", "/d", true);
+			fs.rename("/link", "/link", true);
+
+			assertEquals("x", readFile("/d/f"));
+			assertEquals("t", fs.readSymbolicLink("/link"));
+		}
+
+		@Test
+		@DisplayName("a symbolic link replaces a file and vice versa")
+		void symlinkAndFileReplaceEachOther() throws IOException {
+			fs.createSymbolicLink("/link", "t");
+			writeFile("/f", "x");
+			fs.createSymbolicLink("/link2", "u");
+			writeFile("/g", "y");
+
+			fs.rename("/link", "/f", true);
+			fs.rename("/g", "/link2", true);
+
+			assertEquals("t", fs.readSymbolicLink("/f"));
+			assertEquals("y", readFile("/link2"));
+			assertThrows(NoSuchFileException.class, () -> fs.readNodeMetadata("/link"));
+			assertThrows(NoSuchFileException.class, () -> fs.readNodeMetadata("/g"));
+		}
+
+		@Test
+		@DisplayName("directories and symbolic links never replace each other")
+		void directoryAndSymlink() throws IOException {
+			fs.createDirectory("/d", Set.of());
+			fs.createSymbolicLink("/link", "t");
+
+			assertThrows(FileSystemException.class, () -> fs.rename("/d", "/link", true));
+			assertThrows(FileSystemException.class, () -> fs.rename("/link", "/d", true));
+
+			assertEquals(VfsNodeType.DIRECTORY, fs.readNodeMetadata("/d").type());
+			assertEquals("t", fs.readSymbolicLink("/link"));
+		}
+
+		@Test
 		@DisplayName("refuses to move a directory into its own subtree")
 		void intoItself() throws IOException {
 			fs.createDirectory("/a", Set.of());
