@@ -6,6 +6,7 @@ import org.cryptomator.jfuse.api.FuseMountFailedException;
 import org.cryptomator.vfs.api.VfsFileSystem;
 import org.cryptomator.vfs.backend.nio.NioVfsFileSystem;
 import org.cryptomator.vfs.frontend.fuse.FuseVfsOperations;
+import org.cryptomator.vfs.middleware.shortening.ShorteningFileSystem;
 import org.cryptomator.vfs.middleware.uvf.UvfFileSystem;
 import org.cryptomator.vfs.middleware.uvf.VaultUnlocker;
 import org.slf4j.Logger;
@@ -24,7 +25,7 @@ import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Mounts an encrypted vault directory through the NIO backend, UVF middleware, and FUSE frontend.
+ * Mounts an encrypted vault directory through the NIO backend, file name shortening and UVF middleware, and FUSE frontend.
  */
 public final class VfsTestMain {
 
@@ -53,6 +54,8 @@ public final class VfsTestMain {
 
 		var backend = new NioVfsFileSystem(vaultDir);
 		var ciphertextLoggingMiddleware = new LoggingVfsFileSystem("ciphertext", backend);
+		// the vault config cannot carry nameShorteningThreshold yet (cryptolib does not expose it), so the recommended value is fixed here
+		var shorteningMiddleware = new ShorteningFileSystem(ciphertextLoggingMiddleware, ShorteningFileSystem.RECOMMENDED_THRESHOLD);
 		var password = readPassword();
 		var csprng = SecureRandom.getInstanceStrong();
 		boolean createNewVault = Files.notExists(vaultDir.resolve(VAULT_CONFIG_FILE)) && Files.notExists(vaultDir.resolve(VAULT_DATA_DIR));
@@ -62,7 +65,7 @@ public final class VfsTestMain {
 			builder.setLibraryPath(libraryPath);
 		}
 
-		try (var uvfMiddleware = createNewVault ? initializeVault(ciphertextLoggingMiddleware, password, csprng) : UvfFileSystem.create(ciphertextLoggingMiddleware, VaultUnlocker.withPassword(password, csprng));
+		try (var uvfMiddleware = createNewVault ? initializeVault(shorteningMiddleware, password, csprng) : UvfFileSystem.create(shorteningMiddleware, VaultUnlocker.withPassword(password, csprng));
 			 var fuse = builder.build(new FuseVfsOperations(new LoggingVfsFileSystem("cleartext", uvfMiddleware), builder.errno()))) {
 			Runtime.getRuntime().addShutdownHook(new Thread(() -> closeQuietly(fuse), "vfs-test-shutdown"));
 			LOG.info("Mounting {} at {}", vaultDir, mountPoint);
