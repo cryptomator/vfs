@@ -20,6 +20,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -97,8 +98,8 @@ class DirectoryPathResolverTest {
 		var b = resolver.resolve("/b.txt");
 		var subA = resolver.resolve("/sub/a.txt");
 
-		assertFalse(a.entryPath().equals(b.entryPath()));
-		assertFalse(a.node().name().equals(subA.node().name()));
+		assertNotEquals(a.entryPath(), b.entryPath());
+		assertNotEquals(a.node().name(), subA.node().name());
 		assertEquals(sub, subA.parent());
 	}
 

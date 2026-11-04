@@ -428,7 +428,8 @@ class UvfFileSystemTest {
 		@Test
 		@DisplayName("rejects a wrong password")
 		void wrongPassword() {
-			assertThrows(VaultKeyInvalidException.class, () -> UvfFileSystem.create(ciphertext, VaultUnlocker.withPassword("wrong", csprng)));
+			var unlocker = VaultUnlocker.withPassword("wrong", csprng);
+			assertThrows(VaultKeyInvalidException.class, () -> UvfFileSystem.create(ciphertext, unlocker));
 		}
 
 		@Test

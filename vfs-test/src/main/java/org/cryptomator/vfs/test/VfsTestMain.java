@@ -79,9 +79,9 @@ public final class VfsTestMain {
 	}
 
 	private static void printUsage() {
-		System.out.println("Usage: VfsTestMain <vaultDir> <mountPoint> [fuseLibraryPath]");
-		System.out.println("Opens the vault in <vaultDir>, or creates a new one if neither " + VAULT_CONFIG_FILE + " nor " + VAULT_DATA_DIR + "/ exist yet.");
-		System.out.println("The vault password is read from the " + PASSWORD_ENV + " environment variable or prompted on the console.");
+		LOG.info("Usage: VfsTestMain <vaultDir> <mountPoint> [fuseLibraryPath]");
+		LOG.info("Opens the vault in <vaultDir>, or creates a new one if neither {} nor {}/ exist yet.", VAULT_CONFIG_FILE, VAULT_DATA_DIR);
+		LOG.info("The vault password is read from the {} environment variable or prompted on the console.", PASSWORD_ENV);
 	}
 
 	// creates a password-protected vault with a throwaway recovery key, which is only logged, this is a test tool
@@ -92,7 +92,8 @@ public final class VfsTestMain {
 		var vault = UvfUnlockedVault.create(csprng);
 		vault.setPassword(password);
 		vault.setRecoveryKey((ECPublicKey) recoveryKeyPair.getPublic());
-		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", Base64.getEncoder().encodeToString(recoveryKeyPair.getPrivate().getEncoded()));
+		var recoveryKey = Base64.getEncoder().encodeToString(recoveryKeyPair.getPrivate().getEncoded());
+		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", recoveryKey);
 		return UvfFileSystem.initialize(delegate, vault);
 	}
 
