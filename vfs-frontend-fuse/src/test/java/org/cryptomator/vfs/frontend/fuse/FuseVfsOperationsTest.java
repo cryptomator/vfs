@@ -77,6 +77,7 @@ class FuseVfsOperationsTest {
 
 			@Override
 			public void close() {
+				// nothing to release, the entries are a fixed list
 			}
 		};
 	}

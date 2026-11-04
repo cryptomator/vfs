@@ -383,7 +383,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 						var child = paths.next();
 						try {
 							next = new VfsDirectoryEntry(child.getFileName().toString(), readNodeMetadata(child));
-						} catch (NoSuchFileException e) {
+						} catch (NoSuchFileException _) {
 							// entry vanished between listing and stat, skip it
 						} catch (IOException e) {
 							throw new UncheckedIOException(e);

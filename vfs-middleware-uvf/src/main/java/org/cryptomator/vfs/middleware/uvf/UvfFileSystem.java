@@ -172,7 +172,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 			var cleartextName = directory.decryptName(ciphertextEntry.name(), reader);
 			var resolved = new ResolvedPath(directory, directory.encryptName(cleartextName));
 			return new VfsDirectoryEntry(cleartextName, toCleartextMetadata(resolved, ciphertextEntry.metadata()));
-		} catch (IllegalArgumentException | AuthenticationFailedException e) {
+		} catch (IllegalArgumentException | AuthenticationFailedException _) {
 			return null;
 		} catch (IOException e) {
 			throw new UncheckedIOException(e);
@@ -420,7 +420,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	private @Nullable VfsNodeMetadata metadataOrNull(String ciphertextPath) throws IOException {
 		try {
 			return delegate.readNodeMetadata(ciphertextPath);
-		} catch (NoSuchFileException e) {
+		} catch (NoSuchFileException _) {
 			return null;
 		}
 	}
@@ -428,7 +428,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	private void deleteFileIfExists(String ciphertextPath) throws IOException {
 		try {
 			delegate.deleteFile(ciphertextPath);
-		} catch (NoSuchFileException e) {
+		} catch (NoSuchFileException _) {
 			// nothing to do
 		}
 	}
@@ -464,7 +464,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 			var parent = ciphertextPath.substring(0, separator);
 			try {
 				delegate.createDirectory(parent, permissions);
-			} catch (FileAlreadyExistsException e) {
+			} catch (FileAlreadyExistsException _) {
 				// exists already
 			}
 			separator = ciphertextPath.indexOf('/', separator + 1);

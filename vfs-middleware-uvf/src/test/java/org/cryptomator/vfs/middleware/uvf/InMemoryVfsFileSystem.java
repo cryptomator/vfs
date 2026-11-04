@@ -167,6 +167,7 @@ final class InMemoryVfsFileSystem implements VfsFileSystem {
 
 			@Override
 			public void close() {
+				// nothing to release, the entries were snapshotted
 			}
 		};
 	}
@@ -316,14 +317,17 @@ final class InMemoryVfsFileSystem implements VfsFileSystem {
 
 		@Override
 		public void setTimes(VfsTimes times) {
+			// times are not tracked by this fake
 		}
 
 		@Override
 		public void force(boolean metadata) {
+			// nothing to flush, the content lives in memory
 		}
 
 		@Override
 		public void close() {
+			// nothing to release, the content lives in memory
 		}
 	}
 }

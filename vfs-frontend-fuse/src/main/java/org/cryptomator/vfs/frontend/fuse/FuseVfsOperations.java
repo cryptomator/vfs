@@ -95,7 +95,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	private static int currentUserId(String attribute) {
 		try {
 			return (Integer) Files.getAttribute(Path.of(System.getProperty("user.home")), "unix:" + attribute);
-		} catch (IOException | UnsupportedOperationException | IllegalArgumentException e) {
+		} catch (IOException | UnsupportedOperationException | IllegalArgumentException _) {
 			LOG.warn("Cannot determine {} of the current user, reporting 0", attribute);
 			return 0;
 		}
