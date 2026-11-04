@@ -272,6 +272,27 @@ class NioVfsFileSystemTest {
 		}
 	}
 
+	@Nested
+	@DisplayName("case sensitivity")
+	class CaseSensitivity {
+
+		@Test
+		@DisplayName("is probed from the volume holding the root")
+		void probed() {
+			var os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+			var foldsCase = os.contains("mac") || os.contains("windows"); // default volumes of both fold case, Linux file systems do not
+
+			assertEquals(!foldsCase, fs.capabilities().caseSensitive());
+		}
+
+		@Test
+		@DisplayName("an explicit setting wins")
+		void explicit() throws IOException {
+			assertTrue(new NioVfsFileSystem(root, true).capabilities().caseSensitive());
+			assertFalse(new NioVfsFileSystem(root, false).capabilities().caseSensitive());
+		}
+	}
+
 	@Test
 	@DisplayName("deleteDirectory is not recursive")
 	void deleteDirectoryNotRecursive() throws IOException {

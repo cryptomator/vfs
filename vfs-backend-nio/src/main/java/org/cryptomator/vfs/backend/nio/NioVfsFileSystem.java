@@ -60,7 +60,24 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	private final boolean unix;
 	private final VfsCapabilities capabilities;
 
+	/**
+	 * Mirrors the given directory, probing the volume for case sensitivity.
+	 *
+	 * @param root the directory to expose as {@code /}
+	 * @throws IOException if {@code root} is not a directory or its file store cannot be inspected
+	 */
 	public NioVfsFileSystem(Path root) throws IOException {
+		this(root, probeCaseSensitivity(root.toAbsolutePath().normalize()));
+	}
+
+	/**
+	 * Mirrors the given directory with a known case sensitivity.
+	 *
+	 * @param root the directory to expose as {@code /}
+	 * @param caseSensitive whether the volume holding {@code root} distinguishes names by case
+	 * @throws IOException if {@code root} is not a directory or its file store cannot be inspected
+	 */
+	public NioVfsFileSystem(Path root, boolean caseSensitive) throws IOException {
 		this.root = root.toAbsolutePath().normalize();
 		if (!Files.isDirectory(this.root)) {
 			throw new NotDirectoryException(this.root.toString());
@@ -68,8 +85,22 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		this.fileStore = Files.getFileStore(this.root);
 		this.posix = fileStore.supportsFileAttributeView(PosixFileAttributeView.class);
 		this.unix = fileStore.supportsFileAttributeView(UNIX_VIEW);
-		// NIO offers no way to detect case sensitivity, assume the POSIX default
-		this.capabilities = new VfsCapabilities(true, posix, fileStore.supportsFileAttributeView(USER_VIEW), VfsCapabilities.NO_LIMIT);
+		this.capabilities = new VfsCapabilities(caseSensitive, posix, fileStore.supportsFileAttributeView(USER_VIEW), VfsCapabilities.NO_LIMIT);
+	}
+
+	// NIO cannot ask the file store, so this checks whether the root is still reachable with the case of its letters swapped; a root without cased letters is assumed case-sensitive
+	static boolean probeCaseSensitivity(Path root) throws IOException {
+		var swapped = Path.of(swapCase(root.toString()));
+		if (swapped.equals(root) || !Files.exists(swapped)) {
+			return true;
+		}
+		return !Files.isSameFile(root, swapped);
+	}
+
+	private static String swapCase(String s) {
+		var sb = new StringBuilder(s.length());
+		s.codePoints().forEach(cp -> sb.appendCodePoint(Character.isUpperCase(cp) ? Character.toLowerCase(cp) : Character.toUpperCase(cp)));
+		return sb.toString();
 	}
 
 	@Override
