@@ -38,7 +38,7 @@ class UvfVfsFileTest {
 	}
 
 	private UvfVfsFile createNew(VfsFile backing) {
-		return new UvfVfsFile(backing, vault, vault.createFile());
+		return new UvfVfsFile(backing, vault, vault::createFile);
 	}
 
 	private UvfVfsFile openExisting(VfsFile backing) throws IOException {

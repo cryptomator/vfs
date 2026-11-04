@@ -20,6 +20,7 @@ import org.cryptomator.vfs.api.VfsTimes;
 import org.cryptomator.vfs.middleware.uvf.content.UvfVfsFile;
 import org.cryptomator.vfs.middleware.uvf.dir.DirectoryPathResolver;
 import org.cryptomator.vfs.middleware.uvf.dir.DirectoryPathResolver.ResolvedPath;
+import org.cryptomator.vfs.middleware.uvf.dir.UvfDirectoryStream;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,8 +39,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.EnumSet;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
 import java.util.Set;
 
 /**
@@ -164,41 +163,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	@Override
 	public VfsDirectoryStream openDirectory(String path) throws IOException {
 		var directory = pathResolver.resolveDirectory(path);
-		var ciphertextStream = delegate.openDirectory(DirectoryPathResolver.contentDirPath(directory));
-		return new VfsDirectoryStream() {
-
-			@Override
-			public Iterator<VfsDirectoryEntry> iterator() {
-				var ciphertextEntries = ciphertextStream.iterator();
-				return new Iterator<>() {
-
-					private @Nullable VfsDirectoryEntry next;
-
-					@Override
-					public boolean hasNext() {
-						while (next == null && ciphertextEntries.hasNext()) {
-							next = toCleartextEntry(directory, ciphertextEntries.next());
-						}
-						return next != null;
-					}
-
-					@Override
-					public VfsDirectoryEntry next() {
-						if (!hasNext()) {
-							throw new NoSuchElementException();
-						}
-						var result = next;
-						next = null;
-						return result;
-					}
-				};
-			}
-
-			@Override
-			public void close() throws IOException {
-				ciphertextStream.close();
-			}
-		};
+		return new UvfDirectoryStream(delegate, DirectoryPathResolver.contentDirPath(directory), entry -> toCleartextEntry(directory, entry));
 	}
 
 	// null for entries that are not vault nodes (e.g. the dir.uvf backup) or cannot be decrypted
@@ -283,7 +248,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	private VfsFile wrap(VfsFile ciphertextFile, Set<StandardOpenOption> options) throws IOException {
 		try {
 			if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
-				return new UvfVfsFile(ciphertextFile, vault, vault.createFile()); // the delegate truncated the ciphertext, the new header is written on first write
+				return new UvfVfsFile(ciphertextFile, vault, vault::createFile); // the delegate truncated the ciphertext, the new header is written on first write
 			} else {
 				return UvfVfsFile.open(ciphertextFile, vault);
 			}

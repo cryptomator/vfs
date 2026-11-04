@@ -10,6 +10,7 @@ import org.cryptomator.vfs.api.VfsTimes;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.function.Supplier;
 
 /**
  * A {@link VfsFile} decorator that transparently encrypts writes and decrypts reads using the vault's chunked file format.
@@ -24,16 +25,16 @@ public final class UvfVfsFile implements VfsFile {
 	private final VaultFile file;
 
 	/**
-	 * Wraps an open ciphertext file.
+	 * Wraps an open ciphertext file. The vault file obtained from the supplier is owned by this instance and closed in {@link #close()}.
 	 *
 	 * @param delegate the ciphertext file on the delegate filesystem
 	 * @param vault the unlocked vault
-	 * @param file the vault file holding header and file key, either fresh from {@link UnlockedVault#createFile()} or opened from an existing header
+	 * @param file supplies the vault file holding header and file key, either fresh via {@link UnlockedVault#createFile()} or opened from an existing header
 	 */
-	public UvfVfsFile(VfsFile delegate, UnlockedVault vault, VaultFile file) {
+	public UvfVfsFile(VfsFile delegate, UnlockedVault vault, Supplier<VaultFile> file) {
 		this.delegate = delegate;
 		this.vault = vault;
-		this.file = file;
+		this.file = file.get();
 	}
 
 	/**
@@ -47,7 +48,7 @@ public final class UvfVfsFile implements VfsFile {
 	public static UvfVfsFile open(VfsFile delegate, UnlockedVault vault) throws IOException {
 		long ciphertextSize = delegate.readMetadata().size();
 		if (ciphertextSize == 0) {
-			return new UvfVfsFile(delegate, vault, vault.createFile());
+			return new UvfVfsFile(delegate, vault, vault::createFile);
 		}
 		var header = ByteBuffer.allocate(vault.headerSize());
 		while (header.hasRemaining()) {
@@ -57,7 +58,7 @@ public final class UvfVfsFile implements VfsFile {
 		}
 		header.flip();
 		try {
-			return new UvfVfsFile(delegate, vault, vault.openFile(header, ciphertextSize));
+			return new UvfVfsFile(delegate, vault, () -> vault.openFile(header, ciphertextSize));
 		} catch (AuthenticationFailedException | IllegalArgumentException e) {
 			throw new IOException("Invalid file header or size", e);
 		}
