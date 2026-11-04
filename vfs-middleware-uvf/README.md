@@ -34,4 +34,4 @@ Every operation on `/a/b/c/file` would otherwise read three `dir.uvf` files. `Di
 - Misses and failures are never cached.
 - The time to live bounds staleness caused by changes made to the ciphertext behind this process's back (e.g. a sync client). It cannot detect them; after a stale hit, operations on the vanished content directory fail with `NoSuchFileException` until the entry expires.
 
-Not supported yet: extended attributes, and name shortening (`name.c9s`), which UVF does not use.
+Not supported yet: extended attributes. Long ciphertext names are not shortened here; layer [`vfs-middleware-shortening`](../vfs-middleware-shortening) between this middleware and the backend if the storage limits name lengths.

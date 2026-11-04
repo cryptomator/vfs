@@ -94,9 +94,35 @@ jobs:
           path: coverage/vfs-middleware-uvf
           if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
 
+  middleware-shortening:
+    name: Verify vfs-middleware-shortening
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Verify reactor
+        run: >
+          ./mvnw -B clean verify --also-make --projects vfs-middleware-shortening --no-transfer-progress
+      - name: Prepare coverage artifact
+        run: |
+          mkdir -p coverage/vfs-middleware-shortening/vfs-api coverage/vfs-middleware-shortening/vfs-middleware-shortening
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-shortening/vfs-api/jacoco.xml
+          test ! -f vfs-middleware-shortening/target/site/jacoco/jacoco.xml || cp vfs-middleware-shortening/target/site/jacoco/jacoco.xml coverage/vfs-middleware-shortening/vfs-middleware-shortening/jacoco.xml
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-vfs-middleware-shortening
+          path: coverage/vfs-middleware-shortening
+          if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
+
   sonarcloud:
     name: Run SonarCloud Analysis
-    needs: [frontend-fuse, frontend-webdav, middleware-uvf]
+    needs: [frontend-fuse, frontend-webdav, middleware-shortening, middleware-uvf]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -78,6 +78,7 @@
 		<module>vfs-backend-nio</module>
 		<module>vfs-frontend-fuse</module>
 		<module>vfs-frontend-webdav</module>
+		<module>vfs-middleware-shortening</module>
 		<module>vfs-middleware-uvf</module>
 		<module>vfs-test</module>
 	</modules>
