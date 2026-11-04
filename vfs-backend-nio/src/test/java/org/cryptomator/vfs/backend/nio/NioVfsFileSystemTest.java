@@ -133,6 +133,18 @@ class NioVfsFileSystemTest {
 
 			assertThrows(DirectoryNotEmptyException.class, () -> fs.rename("/src", "/dst", true));
 		}
+
+		@Test
+		@DisplayName("renaming a non-empty directory onto itself is a no-op")
+		void ontoItself() throws IOException {
+			fs.createDirectory("/d", RWX);
+			writeFile("/d/child", "x");
+
+			fs.rename("/d", "/d", true);
+
+			assertEquals("x", readFile("/d/child"));
+			assertThrows(NoSuchFileException.class, () -> fs.rename("/missing", "/missing", true));
+		}
 	}
 
 	@Nested

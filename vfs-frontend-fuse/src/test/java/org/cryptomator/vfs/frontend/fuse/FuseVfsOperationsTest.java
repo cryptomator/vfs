@@ -393,14 +393,15 @@ class FuseVfsOperationsTest {
 		}
 
 		@Test
-		@DisplayName("setxattr maps flags to policies")
+		@DisplayName("setxattr maps the platform's flags to policies")
 		void setxattrFlags() throws IOException {
 			var value = ByteBuffer.allocate(1);
+			var flags = XattrFlags.forCurrentPlatform();
 
 			assertEquals(0, ops.setxattr("/f", "user.a", value, 0));
-			assertEquals(0, ops.setxattr("/f", "user.a", value, 1));
-			assertEquals(0, ops.setxattr("/f", "user.a", value, 2));
-			assertEquals(-EINVAL, ops.setxattr("/f", "user.a", value, 3));
+			assertEquals(0, ops.setxattr("/f", "user.a", value, flags.create()));
+			assertEquals(0, ops.setxattr("/f", "user.a", value, flags.replace()));
+			assertEquals(-EINVAL, ops.setxattr("/f", "user.a", value, flags.create() | flags.replace()));
 
 			Mockito.verify(fs).setXattr("/f", "user.a", value, VfsXattrPolicy.CREATE_OR_REPLACE);
 			Mockito.verify(fs).setXattr("/f", "user.a", value, VfsXattrPolicy.CREATE_ONLY);

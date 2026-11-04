@@ -242,6 +242,18 @@ class UvfFileSystemTest {
 		}
 
 		@Test
+		@DisplayName("TRUNCATE_EXISTING on a read-only open keeps the content, as the delegate ignores it")
+		void truncateExistingReadOnly() throws IOException {
+			writeFile("/f", "kept");
+
+			try (var file = fs.openFile("/f", Set.of(StandardOpenOption.READ, StandardOpenOption.TRUNCATE_EXISTING))) {
+				assertEquals(4, file.readMetadata().size());
+			}
+
+			assertEquals("kept", readFile("/f"));
+		}
+
+		@Test
 		@DisplayName("path-based truncate")
 		void truncate() throws IOException {
 			writeFile("/f", "hello world");
@@ -354,6 +366,17 @@ class UvfFileSystemTest {
 		}
 
 		@Test
+		@DisplayName("refuses to move a directory into its own subtree")
+		void intoItself() throws IOException {
+			fs.createDirectory("/a", Set.of());
+			fs.createDirectory("/a/b", Set.of());
+
+			assertThrows(FileSystemException.class, () -> fs.rename("/a", "/a/b/moved", false));
+
+			assertTrue(list("/a").containsKey("b"));
+		}
+
+		@Test
 		@DisplayName("refuses to replace a directory with a file")
 		void fileOverDirectory() throws IOException {
 			writeFile("/f", "x");
@@ -438,6 +461,15 @@ class UvfFileSystemTest {
 			ciphertext.writeFile("/vault.uvf", "garbage".getBytes(StandardCharsets.UTF_8));
 
 			assertThrows(IOException.class, () -> UvfFileSystem.create(ciphertext, VaultUnlocker.withPassword("correct horse", csprng)));
+		}
+
+		@Test
+		@DisplayName("refuses to read an oversized configuration")
+		void oversizedConfig() throws IOException {
+			ciphertext.writeFile("/vault.uvf", new byte[1024 * 1024 + 1]);
+
+			var e = assertThrows(IOException.class, () -> UvfFileSystem.create(ciphertext, VaultUnlocker.withPassword("correct horse", csprng)));
+			assertTrue(e.getMessage().contains("refusing"));
 		}
 
 		@Test

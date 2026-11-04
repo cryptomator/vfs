@@ -52,6 +52,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
 	private static final Logger LOG = LoggerFactory.getLogger(UvfFileSystem.class);
 	private static final String VAULT_CONFIG_PATH = "/vault.uvf";
+	private static final long MAX_METADATA_FILE_SIZE = 1024 * 1024;
 	private static final Set<PosixFilePermission> DEFAULT_PERMISSIONS = Set.of(); // let the delegate apply its defaults
 
 	private final VfsFileSystem delegate;
@@ -235,23 +236,20 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	public VfsFile openFile(String path, Set<StandardOpenOption> options) throws IOException {
 		var resolved = pathResolver.resolve(path);
 		var ciphertextFile = delegate.openFile(resolved.contentsPath(), ciphertextOptions(options));
-		return wrap(ciphertextFile, options);
+		return wrap(ciphertextFile);
 	}
 
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
 		var resolved = pathResolver.resolve(path);
 		var ciphertextFile = delegate.createFile(resolved.contentsPath(), ciphertextOptions(options), permissions);
-		return wrap(ciphertextFile, options);
+		return wrap(ciphertextFile);
 	}
 
-	private VfsFile wrap(VfsFile ciphertextFile, Set<StandardOpenOption> options) throws IOException {
+	// whether the delegate honoured TRUNCATE_EXISTING (NIO ignores it on read-only opens) shows in the ciphertext size, which open() inspects
+	private VfsFile wrap(VfsFile ciphertextFile) throws IOException {
 		try {
-			if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
-				return new UvfVfsFile(ciphertextFile, vault, vault::createFile); // the delegate truncated the ciphertext, the new header is written on first write
-			} else {
-				return UvfVfsFile.open(ciphertextFile, vault);
-			}
+			return UvfVfsFile.open(ciphertextFile, vault);
 		} catch (IOException e) {
 			deleteQuietly(e, ciphertextFile::close);
 			throw e;
@@ -293,6 +291,10 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
 	@Override
 	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
+		if (targetPath.startsWith(sourcePath + "/")) {
+			// the ciphertext layout is flat, so the delegate cannot notice that the move would orphan the whole subtree
+			throw new FileSystemException(sourcePath, targetPath, "Cannot move a directory into itself");
+		}
 		var source = pathResolver.resolve(sourcePath);
 		var target = pathResolver.resolve(targetPath);
 		var targetMetadata = replaceExisting ? metadataOrNull(target.entryPath()) : null;
@@ -433,9 +435,14 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		}
 	}
 
+	// reads vault.uvf, dir.uvf or symlink.uvf, all of which are tiny; the bound keeps a damaged or hostile ciphertext from exhausting the heap before authentication
 	private static byte[] readAll(VfsFileSystem delegate, String ciphertextPath) throws IOException {
 		try (var file = delegate.openFile(ciphertextPath, Set.of(StandardOpenOption.READ))) {
-			var buf = ByteBuffer.allocate(Math.toIntExact(file.readMetadata().size()));
+			long size = file.readMetadata().size();
+			if (size > MAX_METADATA_FILE_SIZE) {
+				throw new IOException(ciphertextPath + " is " + size + " bytes, refusing to read more than " + MAX_METADATA_FILE_SIZE);
+			}
+			var buf = ByteBuffer.allocate((int) size);
 			while (buf.hasRemaining() && file.read(buf, buf.position()) >= 0) {
 				// keep reading
 			}

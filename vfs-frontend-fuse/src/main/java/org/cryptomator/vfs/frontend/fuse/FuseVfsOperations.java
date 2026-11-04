@@ -17,7 +17,6 @@ import org.cryptomator.vfs.api.VfsMetadata;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.api.VfsTimes;
-import org.cryptomator.vfs.api.VfsXattrPolicy;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,9 +51,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	// renameat2(2) flag, not exposed by jfuse; RENAME_EXCHANGE (2) is deliberately unsupported
 	private static final int RENAME_NOREPLACE = 1;
 
-	// setxattr(2) flags, identical on Linux and macOS
-	private static final int XATTR_CREATE = 1;
-	private static final int XATTR_REPLACE = 2;
+	private static final XattrFlags XATTR_FLAGS = XattrFlags.forCurrentPlatform();
 
 	private final VfsFileSystem fileSystem;
 	private final Errno errno;
@@ -442,12 +439,7 @@ public final class FuseVfsOperations implements FuseOperations {
 
 	@Override
 	public int setxattr(String fusePath, String name, ByteBuffer value, int flags) {
-		var policy = switch (flags & (XATTR_CREATE | XATTR_REPLACE)) {
-			case XATTR_CREATE -> VfsXattrPolicy.CREATE_ONLY;
-			case XATTR_REPLACE -> VfsXattrPolicy.REPLACE_ONLY;
-			case 0 -> VfsXattrPolicy.CREATE_OR_REPLACE;
-			default -> null;
-		};
+		var policy = XATTR_FLAGS.policy(flags);
 		if (policy == null) {
 			return -errno.einval();
 		}

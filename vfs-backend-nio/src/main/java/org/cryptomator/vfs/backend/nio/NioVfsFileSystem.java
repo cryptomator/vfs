@@ -149,10 +149,23 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		Files.delete(node);
 	}
 
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @implNote Without {@code replaceExisting} this is not atomic: NIO offers no {@code RENAME_NOREPLACE}, so it is an existence check followed by
+	 * {@code rename(2)}, and a node created at the target in between is overwritten.
+	 */
 	@Override
 	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
 		var source = resolve(sourcePath);
 		var target = resolve(targetPath);
+		if (source.equals(target)) {
+			// rename(2) is a no-op for identical paths, but the pre-check below would reject a non-empty directory
+			if (!Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
+				throw new NoSuchFileException(sourcePath);
+			}
+			return;
+		}
 		if (replaceExisting) {
 			// rename(2) replaces atomically but reports ENOTEMPTY as a generic FileSystemException, hence the pre-check
 			if (Files.isDirectory(target, LinkOption.NOFOLLOW_LINKS) && !isEmptyDirectory(target)) {
