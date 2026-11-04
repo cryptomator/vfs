@@ -2,6 +2,7 @@ package org.cryptomator.vfs.middleware.uvf.dir;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Ticker;
 import org.cryptomator.cryptolib.api.AuthenticationFailedException;
 import org.cryptomator.cryptolib.api.UnlockedVault;
 import org.cryptomator.cryptolib.api.VaultDirectory;
@@ -43,13 +44,14 @@ public final class DirectoryPathResolver {
 	private final Cache<String, VaultDirectory> directories; // key: absolute ciphertext path of the directory's dir.uvf
 
 	public DirectoryPathResolver(UnlockedVault vault, VaultReader reader) {
-		this(vault, reader, CacheSettings.DEFAULT);
+		this(vault, reader, CacheSettings.DEFAULT, Ticker.systemTicker());
 	}
 
-	public DirectoryPathResolver(UnlockedVault vault, VaultReader reader, CacheSettings cacheSettings) {
+	// visible for testing
+	DirectoryPathResolver(UnlockedVault vault, VaultReader reader, CacheSettings cacheSettings, Ticker ticker) {
 		this.vault = vault;
 		this.reader = reader;
-		this.directories = Caffeine.newBuilder().maximumSize(cacheSettings.maximumSize()).expireAfterWrite(cacheSettings.timeToLive()).build();
+		this.directories = Caffeine.newBuilder().maximumSize(cacheSettings.maximumSize()).expireAfterWrite(cacheSettings.timeToLive()).ticker(ticker).build();
 	}
 
 	/**

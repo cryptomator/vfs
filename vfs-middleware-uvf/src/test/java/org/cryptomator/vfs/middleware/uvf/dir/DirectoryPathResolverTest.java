@@ -1,5 +1,6 @@
 package org.cryptomator.vfs.middleware.uvf.dir;
 
+import com.github.benmanes.caffeine.cache.Ticker;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.cryptolib.api.VaultDirectory;
 import org.cryptomator.cryptolib.api.VaultReader;
@@ -17,6 +18,7 @@ import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -173,13 +175,14 @@ class DirectoryPathResolverTest {
 
 		@Test
 		@DisplayName("expires entries after the time to live")
-		void timeToLive() throws Exception {
-			resolver = new DirectoryPathResolver(vault, reader, new DirectoryPathResolver.CacheSettings(100, Duration.ofMillis(1)));
+		void timeToLive() throws IOException {
+			var now = new AtomicLong();
+			resolver = new DirectoryPathResolver(vault, reader, new DirectoryPathResolver.CacheSettings(100, Duration.ofSeconds(5)), now::get);
 			var first = createDirectory(vault.rootDirectory(), "sub");
 			assertEquals(first, resolver.resolveDirectory("/sub"));
 			var second = createDirectory(vault.rootDirectory(), "sub");
 
-			Thread.sleep(20);
+			now.addAndGet(Duration.ofSeconds(5).toNanos());
 
 			assertEquals(second, resolver.resolveDirectory("/sub"));
 		}
@@ -190,7 +193,7 @@ class DirectoryPathResolverTest {
 			var counting = new DirectoryPathResolver(vault, relPath -> {
 				reads++;
 				return reader.read(relPath);
-			}, DirectoryPathResolver.CacheSettings.DISABLED);
+			}, DirectoryPathResolver.CacheSettings.DISABLED, Ticker.systemTicker());
 			createDirectory(vault.rootDirectory(), "sub");
 
 			counting.resolveDirectory("/sub");
