@@ -1,5 +1,7 @@
 package org.cryptomator.vfs.test;
 
+import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
+import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.jfuse.api.Fuse;
 import org.cryptomator.jfuse.api.FuseMountFailedException;
@@ -14,11 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.GeneralSecurityException;
-import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
-import java.security.interfaces.ECPublicKey;
-import java.security.spec.ECGenParameterSpec;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
@@ -85,14 +83,10 @@ public final class VfsTestMain {
 	}
 
 	// creates a password-protected vault with a throwaway recovery key, which is only logged, this is a test tool
-	private static UvfFileSystem initializeVault(VfsFileSystem delegate, String password, SecureRandom csprng) throws IOException, GeneralSecurityException {
-		var keyGen = KeyPairGenerator.getInstance("EC");
-		keyGen.initialize(new ECGenParameterSpec("secp384r1"), csprng);
-		var recoveryKeyPair = keyGen.generateKeyPair();
-		var vault = UvfUnlockedVault.create(csprng);
-		vault.setPassword(password);
-		vault.setRecoveryKey((ECPublicKey) recoveryKeyPair.getPublic());
-		var recoveryKey = Base64.getEncoder().encodeToString(recoveryKeyPair.getPrivate().getEncoded());
+	private static UvfFileSystem initializeVault(VfsFileSystem delegate, String password, SecureRandom csprng) throws IOException {
+		var recoveryKeyPair = UvfRecoveryKey.generate(csprng);
+		var vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password(password), recoveryKeyPair);
+		var recoveryKey = Base64.getEncoder().encodeToString(recoveryKeyPair.privateKey().getEncoded());
 		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", recoveryKey);
 		return UvfFileSystem.initialize(delegate, vault);
 	}

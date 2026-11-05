@@ -40,6 +40,8 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * A {@link VfsFileSystem} decorator that encrypts writes and decrypts reads according to the Universal Vault Format specification.
@@ -60,6 +62,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	private final DirectoryPathResolver pathResolver;
 	private final VaultReader reader;
 	private final VfsCapabilities capabilities;
+	private final Lock emptyFileLock = new ReentrantLock(); // the first writable handle on an empty ciphertext persists the header; a second one must not race it with its own
 
 	UvfFileSystem(VfsFileSystem delegate, UvfUnlockedVault vault) {
 		this.delegate = delegate;
@@ -103,12 +106,10 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	/**
 	 * Creates a new vault on the delegate filesystem: writes {@code vault.uvf} and the root content directory, then opens the vault.
 	 * <p>
-	 * The vault must be fully configured, i.e. {@link UvfUnlockedVault#setPassword(CharSequence)} or {@link UvfUnlockedVault#setMemberKey(javax.crypto.SecretKey)}
-	 * and {@link UvfUnlockedVault#setRecoveryKey(java.security.interfaces.ECPublicKey)} must have been called. Ownership of {@code vault} passes to the returned
-	 * filesystem, which destroys it on {@link #close()}, also if initialization fails.
+	 * Ownership of {@code vault} passes to the returned filesystem, which destroys it on {@link #close()}, also if initialization fails.
 	 *
 	 * @param delegate the underlying filesystem that will store the ciphertext
-	 * @param vault a freshly created, configured vault, e.g. from {@link UvfUnlockedVault#create(java.security.SecureRandom)}
+	 * @param vault a freshly created vault from {@link UvfUnlockedVault#create(java.security.SecureRandom, org.cryptomator.cryptolib.api.UvfKeyEncryptionKey, org.cryptomator.cryptolib.api.UvfRecoveryKey)}
 	 * @return a ready-to-use UVF filesystem that must be closed to destroy its key material
 	 * @throws java.nio.file.FileAlreadyExistsException if the delegate already holds a {@code vault.uvf}
 	 * @throws IOException if the vault files cannot be written
@@ -235,32 +236,50 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	@Override
 	public VfsFile openFile(String path, Set<StandardOpenOption> options) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextFile = delegate.openFile(resolved.contentsPath(), ciphertextOptions(options));
-		return wrap(ciphertextFile);
+		var ciphertextOptions = ciphertextOptions(options);
+		var ciphertextFile = delegate.openFile(resolved.contentsPath(), ciphertextOptions);
+		return wrap(ciphertextFile, ciphertextOptions.contains(StandardOpenOption.WRITE), options.contains(StandardOpenOption.TRUNCATE_EXISTING));
 	}
 
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextFile = delegate.createFile(resolved.contentsPath(), ciphertextOptions(options), permissions);
-		return wrap(ciphertextFile);
+		var ciphertextOptions = ciphertextOptions(options);
+		var ciphertextFile = delegate.createFile(resolved.contentsPath(), ciphertextOptions, permissions);
+		return wrap(ciphertextFile, ciphertextOptions.contains(StandardOpenOption.WRITE), options.contains(StandardOpenOption.TRUNCATE_EXISTING));
 	}
 
-	// whether the delegate honoured TRUNCATE_EXISTING (NIO ignores it on read-only opens) shows in the ciphertext size, which open() inspects
-	private VfsFile wrap(VfsFile ciphertextFile) throws IOException {
+	// truncation happens on the cleartext handle (keeping the header), so the only empty ciphertexts are those that have never been written to
+	private VfsFile wrap(VfsFile ciphertextFile, boolean writable, boolean truncate) throws IOException {
 		try {
-			return UvfVfsFile.open(ciphertextFile, vault);
+			UvfVfsFile file;
+			if (writable && ciphertextFile.readMetadata().size() == 0) {
+				emptyFileLock.lock();
+				try {
+					file = UvfVfsFile.open(ciphertextFile, vault, true); // re-checks the size, so a header persisted by the handle that held the lock before is picked up
+				} finally {
+					emptyFileLock.unlock();
+				}
+			} else {
+				file = UvfVfsFile.open(ciphertextFile, vault, writable);
+			}
+			if (writable && truncate) { // like NIO, truncation is ignored on read-only opens
+				file.truncate(0);
+			}
+			return file;
 		} catch (IOException e) {
 			deleteQuietly(e, ciphertextFile::close);
 			throw e;
 		}
 	}
 
-	// encrypted I/O always needs READ access (header, read-modify-write of partial chunks) and is strictly positional, so APPEND must not leak through
+	// encrypted I/O always needs READ access (header, read-modify-write of partial chunks) and is strictly positional, so APPEND must not leak through;
+	// TRUNCATE_EXISTING is applied to the cleartext by wrap() so that the header survives
 	private static EnumSet<StandardOpenOption> ciphertextOptions(Set<StandardOpenOption> options) {
 		var result = EnumSet.noneOf(StandardOpenOption.class);
 		result.addAll(options);
 		result.add(StandardOpenOption.READ);
+		result.remove(StandardOpenOption.TRUNCATE_EXISTING);
 		if (result.remove(StandardOpenOption.APPEND)) {
 			result.add(StandardOpenOption.WRITE);
 		}

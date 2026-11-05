@@ -25,6 +25,15 @@ cryptolib (3.x) knows the vault format: `vault.uvf` parsing and unlocking, name 
 
 Node types are decided here, not by cryptolib: a regular file is a plain `*.uvf` file, whereas directories and symbolic links are `*.uvf` directories containing `dir.uvf` or `symlink.uvf`. Every directory's content directory also holds a `dir.uvf` metadata backup, which listings skip and `deleteDirectory` removes.
 
+## Open file handles
+
+`UvfVfsFile` handles share no state with each other; the ciphertext on the delegate is the single source of truth, so handles in different processes behave the same as handles in this one.
+
+- A writable handle opened on an empty ciphertext writes the header immediately (`UvfFileSystem` serialises these opens with a lock, so only one header is ever written). An empty cleartext file is therefore a header-sized ciphertext, and every later open reads that header.
+- `TRUNCATE_EXISTING` is applied to the cleartext, not forwarded to the delegate, so the header survives and 0-byte ciphertexts are always files nobody has written to yet.
+- Before every write, truncate and metadata read a handle compares the ciphertext size with the one its `VaultFile` was derived from and re-reads header and size on a mismatch. That costs one `readMetadata` per call (a path-based stat on the NIO backend) and makes writes and truncations through other handles visible. Reads are optimistic: chunks are authenticated, so a stale size can only surface as a false end of file, a short chunk or a failed authentication, and only then is the size re-checked and the read retried once.
+- Not protected: two handles writing into the same chunk at the same time, where the second read-modify-write wins. Writers that overlap in time are expected to coordinate, as on any file system.
+
 ## Directory cache
 
 Every operation on `/a/b/c/file` would otherwise read three `dir.uvf` files. `DirectoryPathResolver` therefore caches resolved `VaultDirectory` objects in a [Caffeine](https://github.com/ben-manes/caffeine) cache keyed by the ciphertext path of the `dir.uvf` file (see `CacheSettings`, default 10 000 entries, 5 s time to live).

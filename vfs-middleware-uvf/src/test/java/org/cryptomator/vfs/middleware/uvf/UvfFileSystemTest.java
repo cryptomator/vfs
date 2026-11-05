@@ -1,5 +1,7 @@
 package org.cryptomator.vfs.middleware.uvf;
 
+import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
+import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.cryptolib.api.VaultKeyInvalidException;
 import org.cryptomator.vfs.api.VfsDirectoryEntry;
@@ -20,10 +22,7 @@ import java.nio.file.FileSystemException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotLinkException;
 import java.nio.file.StandardOpenOption;
-import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
-import java.security.interfaces.ECPublicKey;
-import java.security.spec.ECGenParameterSpec;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +48,7 @@ class UvfFileSystemTest {
 	@BeforeEach
 	void setUp() throws IOException {
 		csprng = new SecureRandom();
-		vault = UvfUnlockedVault.create(csprng);
+		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("correct horse"), UvfRecoveryKey.generate(csprng));
 		ciphertext = new InMemoryVfsFileSystem();
 		vault.rootDirectory().writeMetadataBackup(ciphertext::writeFile);
 		fs = new UvfFileSystem(ciphertext, vault);
@@ -242,7 +241,34 @@ class UvfFileSystemTest {
 		}
 
 		@Test
-		@DisplayName("TRUNCATE_EXISTING on a read-only open keeps the content, as the delegate ignores it")
+		@DisplayName("TRUNCATE_EXISTING keeps the header, so a concurrent handle stays valid")
+		void truncateExistingKeepsHeader() throws IOException {
+			writeFile("/f", "long content here");
+
+			try (var other = fs.openFile("/f", READ)) {
+				try (var file = fs.openFile("/f", Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) {
+					file.write(ByteBuffer.wrap("new".getBytes(StandardCharsets.UTF_8)), 0);
+				}
+				assertEquals(3, other.readMetadata().size());
+				var buf = ByteBuffer.allocate(3);
+				assertEquals(3, other.read(buf, 0));
+				assertEquals("new", new String(buf.array(), StandardCharsets.UTF_8));
+			}
+		}
+
+		@Test
+		@DisplayName("two handles on a freshly created file share one header")
+		void createdFileSharedByTwoHandles() throws IOException {
+			try (var first = fs.createFile("/f", WRITE, Set.of()); var second = fs.openFile("/f", WRITE)) {
+				first.write(ByteBuffer.wrap("ab".getBytes(StandardCharsets.UTF_8)), 0);
+				second.write(ByteBuffer.wrap("cd".getBytes(StandardCharsets.UTF_8)), 2);
+			}
+
+			assertEquals("abcd", readFile("/f"));
+		}
+
+		@Test
+		@DisplayName("TRUNCATE_EXISTING on a read-only open keeps the content, like NIO")
 		void truncateExistingReadOnly() throws IOException {
 			writeFile("/f", "kept");
 
@@ -488,11 +514,7 @@ class UvfFileSystemTest {
 	class Create {
 
 		@BeforeEach
-		void persistConfig() throws Exception {
-			var keyGen = KeyPairGenerator.getInstance("EC");
-			keyGen.initialize(new ECGenParameterSpec("secp256r1"));
-			vault.setPassword("correct horse");
-			vault.setRecoveryKey((ECPublicKey) keyGen.generateKeyPair().getPublic());
+		void persistConfig() throws IOException {
 			ciphertext.writeFile("/vault.uvf", vault.serializeConfig());
 			fs.createDirectory("/existing", Set.of());
 		}
@@ -544,13 +566,8 @@ class UvfFileSystemTest {
 	@DisplayName("initialize")
 	class Initialize {
 
-		private UvfUnlockedVault configuredVault() throws Exception {
-			var keyGen = KeyPairGenerator.getInstance("EC");
-			keyGen.initialize(new ECGenParameterSpec("secp256r1"));
-			var newVault = UvfUnlockedVault.create(csprng);
-			newVault.setPassword("pw");
-			newVault.setRecoveryKey((ECPublicKey) keyGen.generateKeyPair().getPublic());
-			return newVault;
+		private UvfUnlockedVault configuredVault() {
+			return UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng));
 		}
 
 		@Test

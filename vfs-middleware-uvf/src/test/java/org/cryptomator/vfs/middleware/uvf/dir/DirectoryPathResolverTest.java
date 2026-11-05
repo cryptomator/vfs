@@ -1,6 +1,8 @@
 package org.cryptomator.vfs.middleware.uvf.dir;
 
 import com.github.benmanes.caffeine.cache.Ticker;
+import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
+import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.cryptolib.api.VaultDirectory;
 import org.cryptomator.cryptolib.api.VaultReader;
@@ -43,7 +45,8 @@ class DirectoryPathResolverTest {
 
 	@BeforeEach
 	void setUp() {
-		vault = UvfUnlockedVault.create(new SecureRandom());
+		var csprng = new SecureRandom();
+		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng));
 		resolver = new DirectoryPathResolver(vault, reader);
 	}
 
