@@ -324,7 +324,7 @@ class UvfVfsFileTest {
 
 	@Test
 	@DisplayName("open fails on garbage")
-	void openFailsOnGarbage() throws IOException {
+	void openFailsOnGarbage() {
 		var backing = new InMemoryVfsFile();
 		byte[] garbage = new byte[vault.headerSize() + 10];
 		new SecureRandom().nextBytes(garbage);

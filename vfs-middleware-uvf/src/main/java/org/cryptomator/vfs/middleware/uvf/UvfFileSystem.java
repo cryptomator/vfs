@@ -54,7 +54,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
 	private static final Logger LOG = LoggerFactory.getLogger(UvfFileSystem.class);
 	private static final String VAULT_CONFIG_PATH = "/vault.uvf";
-	private static final long MAX_METADATA_FILE_SIZE = 1024 * 1024;
+	private static final long MAX_METADATA_FILE_SIZE = 1024L * 1024;
 	private static final Set<PosixFilePermission> DEFAULT_PERMISSIONS = Set.of(); // let the delegate apply its defaults
 
 	private final VfsFileSystem delegate;
