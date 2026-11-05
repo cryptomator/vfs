@@ -20,9 +20,11 @@ import java.nio.file.AccessMode;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.OpenOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
@@ -39,6 +41,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserDefinedFileAttributeView;
 import java.time.Instant;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -57,7 +60,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	private static final String USER_VIEW = "user";
 	private static final XattrNames XATTR_NAMES = XattrNames.forCurrentPlatform();
 
-	private final Path root;
+	private final Path root; // real path: the root may be reached through symbolic links, nothing below it may be one
 	private final FileStore fileStore;
 	private final boolean posix;
 	private final boolean unix;
@@ -83,10 +86,10 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	 * @throws IOException if {@code root} is not a directory or its file store cannot be inspected
 	 */
 	public NioVfsFileSystem(Path root, boolean caseSensitive) throws IOException {
-		this.root = root.toAbsolutePath().normalize();
-		if (!Files.isDirectory(this.root)) {
-			throw new NotDirectoryException(this.root.toString());
+		if (!Files.isDirectory(root)) {
+			throw new NotDirectoryException(root.toString());
 		}
+		this.root = root.toRealPath();
 		this.fileStore = Files.getFileStore(this.root);
 		this.posix = fileStore.supportsFileAttributeView(PosixFileAttributeView.class);
 		this.unix = fileStore.supportsFileAttributeView(UNIX_VIEW);
@@ -133,12 +136,19 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	@Override
 	public void checkAccess(String path, Set<AccessMode> accessModes) throws IOException {
 		var node = resolve(path);
+		if (Files.isSymbolicLink(node)) {
+			return; // access(2) would follow the link; the link itself exists and is always accessible
+		}
 		node.getFileSystem().provider().checkAccess(node, accessModes.toArray(AccessMode[]::new));
 	}
 
 	@Override
 	public VfsDirectoryStream openDirectory(String path) throws IOException {
-		return new NioDirectoryStream(Files.newDirectoryStream(resolve(path)));
+		var node = resolve(path);
+		if (Files.isSymbolicLink(node)) {
+			throw new NotDirectoryException(path); // newDirectoryStream would follow the link
+		}
+		return new NioDirectoryStream(Files.newDirectoryStream(node));
 	}
 
 	@Override
@@ -170,9 +180,11 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 	// opened and registered under the read lock, so a concurrent rename cannot slip in between and leave the handle with a stale path
 	private NioOpenFile open(Path node, Set<StandardOpenOption> options, FileAttribute<?>... attrs) throws IOException {
+		var openOptions = new HashSet<OpenOption>(options);
+		openOptions.add(LinkOption.NOFOLLOW_LINKS); // O_NOFOLLOW, a symbolic link is never opened as a file
 		renameLock.readLock().lock();
 		try {
-			var channel = FileChannel.open(node, options, attrs);
+			var channel = FileChannel.open(node, openOptions, attrs);
 			try {
 				var file = new NioOpenFile(node, channel, readNodeMetadata(node));
 				openFiles.add(file);
@@ -188,7 +200,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 	@Override
 	public void truncate(String path, long size) throws IOException {
-		try (var channel = FileChannel.open(resolve(path), StandardOpenOption.WRITE)) {
+		try (var channel = FileChannel.open(resolve(path), StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
 			truncate(channel, size);
 		}
 	}
@@ -252,6 +264,9 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	@Override
 	public void setPermissions(String path, Set<PosixFilePermission> permissions) throws IOException {
 		var node = resolve(path);
+		if (Files.isSymbolicLink(node)) {
+			throw new FileSystemException(path, null, "cannot change permissions of a symbolic link"); // chmod(2) would follow the link
+		}
 		if (posix) {
 			Files.setPosixFilePermissions(node, permissions);
 		}
@@ -312,6 +327,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		view.delete(viewName);
 	}
 
+	// lexical confinement to the root, plus a check that no component below the root is a symbolic link: the parent's real path must be exactly the real root plus the relative path
 	private Path resolve(String path) throws IOException {
 		String relative = path;
 		while (relative.startsWith("/")) {
@@ -320,6 +336,10 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		var resolved = relative.isEmpty() ? root : root.resolve(relative).normalize();
 		if (!resolved.startsWith(root)) {
 			throw new NoSuchFileException(path);
+		}
+		var parent = resolved.equals(root) ? root : resolved.getParent();
+		if (!parent.equals(root) && !parent.toRealPath().equals(parent)) {
+			throw new NoSuchFileException(path, null, "path contains a symbolic link");
 		}
 		return resolved;
 	}

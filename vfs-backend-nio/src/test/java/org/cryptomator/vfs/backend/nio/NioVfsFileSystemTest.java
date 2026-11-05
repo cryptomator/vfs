@@ -319,6 +319,67 @@ class NioVfsFileSystemTest {
 	}
 
 	@Nested
+	@DisplayName("symbolic link confinement")
+	class SymlinkConfinement {
+
+		@TempDir
+		Path outside;
+
+		@BeforeEach
+		void assumeSymlinks() {
+			Assumptions.assumeTrue(fs.capabilities().supportsSymbolicLinks());
+		}
+
+		@Test
+		@DisplayName("the root itself may be reached through a symbolic link")
+		void rootThroughLink() throws IOException {
+			Files.createDirectory(root.resolve("real"));
+			Files.createSymbolicLink(root.resolve("link"), root.resolve("real"));
+			var linked = new NioVfsFileSystem(root.resolve("link"));
+
+			try (var file = linked.createFile("/f", Set.of(StandardOpenOption.WRITE), RW)) {
+				file.write(ByteBuffer.wrap("x".getBytes(StandardCharsets.UTF_8)), 0);
+			}
+
+			assertTrue(Files.exists(root.resolve("real/f")));
+		}
+
+		@Test
+		@DisplayName("a link to a file outside the root is never opened or truncated")
+		void linkToOutsideFile() throws IOException {
+			var secret = Files.writeString(outside.resolve("secret"), "secret");
+			Files.createSymbolicLink(root.resolve("x"), secret);
+
+			assertThrows(IOException.class, () -> fs.openFile("/x", Set.of(StandardOpenOption.READ)));
+			assertThrows(IOException.class, () -> fs.openFile("/x", Set.of(StandardOpenOption.WRITE)));
+			assertThrows(IOException.class, () -> fs.truncate("/x", 0));
+			assertThrows(IOException.class, () -> fs.setPermissions("/x", RW));
+
+			assertEquals("secret", Files.readString(secret));
+			assertEquals(VfsNodeType.SYMBOLIC_LINK, fs.readNodeMetadata("/x").type());
+			assertEquals(secret.toString(), fs.readSymbolicLink("/x"));
+		}
+
+		@Test
+		@DisplayName("a link to a directory is never traversed, whether it points outside or inside the root")
+		void linkToDirectory() throws IOException {
+			Files.writeString(outside.resolve("f"), "outside");
+			Files.createSymbolicLink(root.resolve("odir"), outside);
+			Files.createDirectory(root.resolve("real"));
+			Files.writeString(root.resolve("real/f"), "inside");
+			Files.createSymbolicLink(root.resolve("idir"), root.resolve("real"));
+
+			assertThrows(NoSuchFileException.class, () -> fs.openFile("/odir/f", Set.of(StandardOpenOption.READ)));
+			assertThrows(NoSuchFileException.class, () -> fs.openFile("/idir/f", Set.of(StandardOpenOption.READ)));
+			assertThrows(NoSuchFileException.class, () -> fs.readNodeMetadata("/idir/f"));
+			assertThrows(NoSuchFileException.class, () -> fs.createFile("/odir/new", Set.of(StandardOpenOption.WRITE), RW));
+			assertThrows(java.nio.file.NotDirectoryException.class, () -> fs.openDirectory("/odir"));
+
+			assertEquals("inside", readFile("/real/f"));
+		}
+	}
+
+	@Nested
 	@DisplayName("case sensitivity")
 	class CaseSensitivity {
 
