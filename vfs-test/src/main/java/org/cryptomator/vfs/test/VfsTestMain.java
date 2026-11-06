@@ -1,18 +1,24 @@
 package org.cryptomator.vfs.test;
 
+import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
+import org.cryptomator.cryptolib.api.UvfRecoveryKey;
+import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.jfuse.api.Fuse;
 import org.cryptomator.jfuse.api.FuseMountFailedException;
+import org.cryptomator.vfs.api.VfsFileSystem;
 import org.cryptomator.vfs.backend.nio.NioVfsFileSystem;
 import org.cryptomator.vfs.frontend.fuse.FuseVfsOperations;
 import org.cryptomator.vfs.middleware.uvf.UvfFileSystem;
+import org.cryptomator.vfs.middleware.uvf.VaultUnlocker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 /**
@@ -21,6 +27,10 @@ import java.util.concurrent.TimeoutException;
 public final class VfsTestMain {
 
 	private static final Logger LOG = LoggerFactory.getLogger(VfsTestMain.class);
+	private static final String PASSWORD_ENV = "VFS_VAULT_PASSWORD";
+	private static final String MOUNT_FLAGS_ENV = "VFS_MOUNT_FLAGS";
+	private static final String VAULT_CONFIG_FILE = "vault.uvf";
+	private static final String VAULT_DATA_DIR = "d";
 
 	public static void main(String[] args) throws Exception {
 		if (args.length < 2 || args.length > 3) {
@@ -41,22 +51,20 @@ public final class VfsTestMain {
 
 		var backend = new NioVfsFileSystem(vaultDir);
 		var ciphertextLoggingMiddleware = new LoggingVfsFileSystem("ciphertext", backend);
-		var uvfMiddleware = UvfFileSystem.create(ciphertextLoggingMiddleware, jweData -> {
-			// TODO: replace with proper JWE decryption
-			return new String(jweData, StandardCharsets.UTF_8);
-		}, SecureRandom.getInstanceStrong());
-		var cleartextLoggingMiddleware = new LoggingVfsFileSystem("cleartext", uvfMiddleware);
+		var password = readPassword();
+		var csprng = SecureRandom.getInstanceStrong();
+		boolean createNewVault = Files.notExists(vaultDir.resolve(VAULT_CONFIG_FILE)) && Files.notExists(vaultDir.resolve(VAULT_DATA_DIR));
 
 		var builder = Fuse.builder();
 		if (libraryPath != null && !libraryPath.isBlank()) {
 			builder.setLibraryPath(libraryPath);
 		}
 
-		var operations = new FuseVfsOperations(cleartextLoggingMiddleware, builder.errno());
-		try (var fuse = builder.build(operations)) {
+		try (var uvfMiddleware = createNewVault ? initializeVault(ciphertextLoggingMiddleware, password, csprng) : UvfFileSystem.create(ciphertextLoggingMiddleware, VaultUnlocker.withPassword(password, csprng));
+			 var fuse = builder.build(new FuseVfsOperations(new LoggingVfsFileSystem("cleartext", uvfMiddleware), builder.errno()))) {
 			Runtime.getRuntime().addShutdownHook(new Thread(() -> closeQuietly(fuse), "vfs-test-shutdown"));
 			LOG.info("Mounting {} at {}", vaultDir, mountPoint);
-			fuse.mount("vfs-test", mountPoint, "-s");
+			fuse.mount("vfs-test", mountPoint, mountFlags());
 			LOG.info("Enter anything to unmount...");
 			System.in.read();
 		} catch (FuseMountFailedException | TimeoutException e) {
@@ -69,7 +77,44 @@ public final class VfsTestMain {
 	}
 
 	private static void printUsage() {
-		System.out.println("Usage: VfsTestMain <vaultDir> <mountPoint> [fuseLibraryPath]");
+		LOG.info("Usage: VfsTestMain <vaultDir> <mountPoint> [fuseLibraryPath]");
+		LOG.info("Opens the vault in <vaultDir>, or creates a new one if neither {} nor {}/ exist yet.", VAULT_CONFIG_FILE, VAULT_DATA_DIR);
+		LOG.info("The vault password is read from the {} environment variable or prompted on the console.", PASSWORD_ENV);
+	}
+
+	// creates a password-protected vault with a throwaway recovery key, which is only logged, this is a test tool
+	private static UvfFileSystem initializeVault(VfsFileSystem delegate, String password, SecureRandom csprng) throws IOException {
+		var recoveryKeyPair = UvfRecoveryKey.generate(csprng);
+		var vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password(password), recoveryKeyPair);
+		var recoveryKey = Base64.getEncoder().encodeToString(recoveryKeyPair.privateKey().getEncoded());
+		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", recoveryKey);
+		return UvfFileSystem.initialize(delegate, vault);
+	}
+
+	// single-threaded; on macOS the same macFUSE flags as Cryptomator (kernel-side permission checks, no AppleDouble sidecars), which cut Finder's
+	// per-interaction call storm by roughly 8x; additional flags can be supplied via the environment
+	private static String[] mountFlags() {
+		var flags = new java.util.ArrayList<>(List.of("-s"));
+		if (System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("mac")) {
+			flags.addAll(List.of("-oatomic_o_trunc", "-oauto_xattr", "-oauto_cache", "-onoappledouble", "-odefault_permissions"));
+		}
+		var extra = System.getenv(MOUNT_FLAGS_ENV);
+		if (extra != null && !extra.isBlank()) {
+			flags.addAll(List.of(extra.trim().split("\\s+")));
+		}
+		return flags.toArray(String[]::new);
+	}
+
+	private static String readPassword() {
+		var fromEnv = System.getenv(PASSWORD_ENV);
+		if (fromEnv != null) {
+			return fromEnv;
+		}
+		var console = System.console();
+		if (console == null) {
+			throw new IllegalStateException("No console available, set " + PASSWORD_ENV);
+		}
+		return new String(console.readPassword("Vault password: "));
 	}
 
 	private static void closeQuietly(Fuse fuse) {
