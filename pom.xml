@@ -76,6 +76,7 @@
 		<module>vfs-api</module>
 		<module>vfs-common</module>
 		<module>vfs-backend-nio</module>
+		<module>vfs-frontend-fskit</module>
 		<module>vfs-frontend-fuse</module>
 		<module>vfs-frontend-webdav</module>
 		<module>vfs-middleware-uvf</module>
