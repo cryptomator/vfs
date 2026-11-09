@@ -32,6 +32,7 @@ Layered VFS with a pipeline design: **Frontend → Middleware → Backend**, all
 - This project handles only I/O. All cryptographic operations live in the separate `org.cryptomator:cryptolib` Maven dependency.
 - New Maven subprojects must use JSpecify's `@NullMarked` on the module declaration. All nullable fields must be explicitly annotated with `@Nullable`.
 - Each subproject has a README.md with architectural context and subproject-specific hints. Always read a subproject's README.md before working in it.
+- Cross-cutting design documentation lives in `docs/`. Read `docs/*.md` before changing `vfs-api` or adding a frontend; `docs/file-system-ops.md` explains which operations each target frontend (FUSE, FSKit, WinFsp, SMB, WebDAV) supports and why the API looks the way it does.
 - Strive for small incremental commits. For non-trivial tasks, always make a plan first to break work into small committable steps.
 
 ## Code Conventions
@@ -43,3 +44,4 @@ Layered VFS with a pipeline design: **Frontend → Middleware → Backend**, all
 - Logging: SLF4J
 - Testing: JUnit Jupiter 6, Mockito (loaded as javaagent via surefire config)
 - Mockito stubbing: always use `Mockito.doReturn().when()` style, never `Mockito.when().thenReturn()`
+- Resource wrappers (an `AutoCloseable` that holds another `AutoCloseable`, e.g. a `VfsFile` decorating a delegate's `VfsFile`): acquire in the constructor, release in `close()`. Never hand an already open resource to a constructor or factory; pass a way to open it instead (a lambda, or a path plus options) so the wrapper opens it itself. If anything later in the constructor fails, the constructor closes what it already holds and rethrows, so callers need no catch blocks: `return new Wrapper(() -> delegate.open(...))`. Release with `Closeables.suppressWhileClosing(resource, e)` from `vfs-common` so a failing close cannot hide the original exception. Do not call `close()` before every field is assigned; acquire everything that must precede assignment in a static helper that cleans up after itself (see `UvfVfsFile.Opened`). Examples: `UvfVfsFile`, `UvfDirectoryStream`, `NioOpenFile`.

@@ -19,5 +19,10 @@
 			<artifactId>vfs-api</artifactId>
 			<version>${project.version}</version>
 		</dependency>
+		<dependency>
+			<groupId>org.cryptomator</groupId>
+			<artifactId>vfs-common</artifactId>
+			<version>${project.version}</version>
+		</dependency>
 	</dependencies>
 </project>

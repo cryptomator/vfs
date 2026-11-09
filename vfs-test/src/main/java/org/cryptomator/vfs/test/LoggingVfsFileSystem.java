@@ -1,16 +1,18 @@
 package org.cryptomator.vfs.test;
 
-import org.cryptomator.vfs.api.VfsDirectoryEntry;
+import org.cryptomator.vfs.api.VfsCapabilities;
+import org.cryptomator.vfs.api.VfsDirectoryStream;
 import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsFileSystem;
 import org.cryptomator.vfs.api.VfsMetadata;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsTimes;
+import org.cryptomator.vfs.api.VfsXattrPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.event.Level;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.AccessMode;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
@@ -28,6 +30,12 @@ final class LoggingVfsFileSystem implements VfsFileSystem {
 	LoggingVfsFileSystem(String label, VfsFileSystem delegate) {
 		this.delegate = delegate;
 		this.log = LoggerFactory.getLogger(LoggingVfsFileSystem.class.getName() + "." + label);
+	}
+
+	@Override
+	public VfsCapabilities capabilities() {
+		log.debug("capabilities()");
+		return delegate.capabilities();
 	}
 
 	@Override
@@ -49,9 +57,9 @@ final class LoggingVfsFileSystem implements VfsFileSystem {
 	}
 
 	@Override
-	public List<VfsDirectoryEntry> listDirectory(String path) throws IOException {
-		log.debug("listDirectory({})", path);
-		return delegate.listDirectory(path);
+	public VfsDirectoryStream openDirectory(String path) throws IOException {
+		log.debug("openDirectory({})", path);
+		return delegate.openDirectory(path);
 	}
 
 	@Override
@@ -74,7 +82,7 @@ final class LoggingVfsFileSystem implements VfsFileSystem {
 
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
-		log.debug("createFile({})", path);
+		log.debug("createFile({}, {})", path, options);
 		return delegate.createFile(path, options, permissions);
 	}
 
@@ -91,14 +99,56 @@ final class LoggingVfsFileSystem implements VfsFileSystem {
 	}
 
 	@Override
-	public void rename(String sourcePath, String targetPath) throws IOException {
-		log.debug("rename({}, {})", sourcePath, targetPath);
-		delegate.rename(sourcePath, targetPath);
+	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
+		log.debug("rename({}, {}, replaceExisting={})", sourcePath, targetPath, replaceExisting);
+		delegate.rename(sourcePath, targetPath, replaceExisting);
 	}
 
 	@Override
 	public void setTimes(String path, VfsTimes times) throws IOException {
-		log.debug("setTimes({})", path);
+		log.debug("setTimes({}, {})", path, times);
 		delegate.setTimes(path, times);
+	}
+
+	@Override
+	public void setPermissions(String path, Set<PosixFilePermission> permissions) throws IOException {
+		log.debug("setPermissions({}, {})", path, permissions);
+		delegate.setPermissions(path, permissions);
+	}
+
+	@Override
+	public String readSymbolicLink(String path) throws IOException {
+		log.debug("readSymbolicLink({})", path);
+		return delegate.readSymbolicLink(path);
+	}
+
+	@Override
+	public void createSymbolicLink(String path, String target) throws IOException {
+		log.debug("createSymbolicLink({}, {})", path, target);
+		delegate.createSymbolicLink(path, target);
+	}
+
+	@Override
+	public List<String> listXattrs(String path) throws IOException {
+		log.debug("listXattrs({})", path);
+		return delegate.listXattrs(path);
+	}
+
+	@Override
+	public ByteBuffer getXattr(String path, String name) throws IOException {
+		log.debug("getXattr({}, {})", path, name);
+		return delegate.getXattr(path, name);
+	}
+
+	@Override
+	public void setXattr(String path, String name, ByteBuffer value, VfsXattrPolicy policy) throws IOException {
+		log.debug("setXattr({}, {}, {} bytes, {})", path, name, value.remaining(), policy);
+		delegate.setXattr(path, name, value, policy);
+	}
+
+	@Override
+	public void removeXattr(String path, String name) throws IOException {
+		log.debug("removeXattr({}, {})", path, name);
+		delegate.removeXattr(path, name);
 	}
 }
