@@ -61,6 +61,7 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 
 	private final VfsFileSystem delegate;
 	private final NameShortener shortener;
+	private final VfsCapabilities capabilities;
 	// verified sidecar contents by hash; the hash determines the content, so entries never become wrong
 	private final Map<String, String> sidecarCache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
 		@Override
@@ -84,11 +85,15 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		}
 		this.delegate = delegate;
 		this.shortener = new NameShortener(threshold);
+		// a long name is stored under the hash of its exact UTF-8 bytes, so names differing only in case or normalization never alias, whatever the delegate does;
+		// reporting the delegate's insensitivity would let frontends rewrite names and miss long-named nodes, so the strict variant is reported
+		var delegateCapabilities = delegate.capabilities();
+		this.capabilities = new VfsCapabilities(true, true, delegateCapabilities.supportsSymbolicLinks(), delegateCapabilities.supportsXattrs(), delegateCapabilities.maxXattrValueSize());
 	}
 
 	@Override
 	public VfsCapabilities capabilities() {
-		return delegate.capabilities();
+		return capabilities;
 	}
 
 	@Override
@@ -110,7 +115,7 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 	@Override
 	public VfsDirectoryStream openDirectory(String path) throws IOException {
 		var storedDir = storedPath(path);
-		return new MappingDirectoryStream(delegate.openDirectory(storedDir), entry -> toUpperEntry(storedDir, entry));
+		return new MappingDirectoryStream(delegate, storedDir, entry -> toUpperEntry(storedDir, entry));
 	}
 
 	// null for sidecars and for entries that cannot be mapped back to a valid name

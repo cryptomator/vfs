@@ -101,6 +101,19 @@ class ShorteningFileSystemTest {
 	}
 
 	@Test
+	@DisplayName("capabilities are case- and normalization-sensitive, optional features come from the delegate")
+	void testCapabilities() throws IOException {
+		var delegateCapabilities = new NioVfsFileSystem(root).capabilities();
+		var capabilities = fs.capabilities();
+
+		assertTrue(capabilities.caseSensitive());
+		assertTrue(capabilities.normalizationSensitive());
+		assertEquals(delegateCapabilities.supportsSymbolicLinks(), capabilities.supportsSymbolicLinks());
+		assertEquals(delegateCapabilities.supportsXattrs(), capabilities.supportsXattrs());
+		assertEquals(delegateCapabilities.maxXattrValueSize(), capabilities.maxXattrValueSize());
+	}
+
+	@Test
 	@DisplayName("short names are stored as-is")
 	void testShortNamePassThrough() throws IOException {
 		var name = "a".repeat(THRESHOLD);

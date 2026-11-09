@@ -23,6 +23,7 @@ All lengths refer to UTF-8 bytes. `{hash}` is the leftmost 160 bits of SHA-256 o
 - **Listing** hides sidecars (including conflicting copies of them), verifies every sidecar (valid UTF-8, longer than the threshold, matching hash) and skips shortened nodes with a missing or invalid sidecar as well as stored names exceeding the threshold.
 - **Reserved names.** Names that look like stored names (`{hash}.shortened*.uvf`, `{hash}.original*.uvf`) are rejected.
 - **Name length.** Names up to `MAX_NAME_LENGTH` (1024) bytes are accepted and reported as `VfsMetadata.maxNameLength()`, regardless of the delegate's limit.
+- **Capabilities.** Always reported as case- and normalization-sensitive: a long name is stored under the hash of its exact bytes, so variants differing only in case or Unicode form never alias, even on an insensitive delegate. Optional features (symbolic links, xattrs) are passed through from the delegate.
 - **Caching.** Verified sidecar contents are cached by hash (LRU, 10 000 entries). The hash determines the content, so an entry never becomes wrong; it does not say whether the node still exists.
 
 ## Sync conflicts

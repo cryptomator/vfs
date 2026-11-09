@@ -2,6 +2,7 @@ package org.cryptomator.vfs.middleware.shortening;
 
 import org.cryptomator.vfs.api.VfsDirectoryEntry;
 import org.cryptomator.vfs.api.VfsDirectoryStream;
+import org.cryptomator.vfs.api.VfsFileSystem;
 import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
@@ -18,11 +19,15 @@ final class MappingDirectoryStream implements VfsDirectoryStream {
 	private final Function<VfsDirectoryEntry, @Nullable VfsDirectoryEntry> mapping;
 
 	/**
-	 * @param storedStream the listing of the delegate, owned and closed by this stream
+	 * Opens the stored directory on the delegate. The returned stream owns the underlying listing and closes it in {@link #close()}.
+	 *
+	 * @param delegate the file system holding the stored names
+	 * @param storedDirPath the absolute path of the directory on the delegate
 	 * @param mapping maps a stored entry to the entry reported to the upper layer, or to {@code null} to hide it
+	 * @throws IOException if the stored directory cannot be opened
 	 */
-	MappingDirectoryStream(VfsDirectoryStream storedStream, Function<VfsDirectoryEntry, @Nullable VfsDirectoryEntry> mapping) {
-		this.storedStream = storedStream;
+	MappingDirectoryStream(VfsFileSystem delegate, String storedDirPath, Function<VfsDirectoryEntry, @Nullable VfsDirectoryEntry> mapping) throws IOException {
+		this.storedStream = delegate.openDirectory(storedDirPath);
 		this.mapping = mapping;
 	}
 
