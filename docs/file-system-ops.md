@@ -11,6 +11,16 @@ This document records the research behind the shape of `vfs-api`: which operatio
 
 Common denominator: a **path-based namespace plus an opaque open handle for data operations**. FSKit is the odd one out; its frontend keeps an `FSItem` to path map (libfuse's high-level layer does the same internally), which works as long as the API never requires item identity.
 
+### Open handles outlive their paths
+
+Every frontend may keep a `VfsFile` open while the node is renamed, deleted or replaced underneath it (POSIX unlink-while-open, WinFsp and SMB delete-on-close, `rename` over an open target). The handle must keep working on the data of the node it was opened on. Backends that address nodes by path (NIO) therefore track two states per handle:
+
+- **Attached**: the handle's path still names its node. Renames of the node or of an ancestor re-point the path, so metadata and timestamp updates go through it.
+- **Detached**: the path no longer names the handle's node, because the node was deleted, or another node was moved over it. A detached handle keeps reading, writing, truncating and syncing its data, reports the metadata it last saw together with the live size, and refuses operations that only work through a path, such as `setTimes`, with `NoSuchFileException`.
+
+> [!IMPORTANT]
+> A backend can only detach handles for changes it performed itself. If a third-party process deletes or replaces the node behind the backend's back, the handle notices a vanished path on its next metadata read and detaches then, but a replacement it cannot tell apart from its own node until the backend has a way to compare node identity (`fstat`, which NIO lacks).
+
 ## Operation matrix
 
 ✓ native, ~ emulable or partial, ✗ absent. The last column maps each row to `vfs-api`.

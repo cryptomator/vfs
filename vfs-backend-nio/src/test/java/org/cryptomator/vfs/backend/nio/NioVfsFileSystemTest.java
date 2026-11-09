@@ -227,6 +227,39 @@ class NioVfsFileSystemTest {
 		}
 
 		@Test
+		@DisplayName("handle is detached when another file is renamed over it")
+		void detachedByReplacingRename() throws IOException {
+			writeFile("/f", "hello");
+			writeFile("/g", "replacement");
+			var mtime = Instant.parse("2020-01-02T03:04:05Z");
+			try (var file = fs.openFile("/f", Set.of(StandardOpenOption.WRITE))) {
+				fs.rename("/g", "/f", true);
+				file.write(ByteBuffer.wrap("!".getBytes(StandardCharsets.UTF_8)), 5);
+
+				assertEquals(6, file.readMetadata().size(), "the handle reports its own file, not the replacement");
+				assertThrows(NoSuchFileException.class, () -> file.setTimes(new VfsTimes(null, mtime, null)));
+			}
+			assertEquals("replacement", readFile("/f"));
+			assertNotEquals(mtime, fs.readNodeMetadata("/f").lastModifiedTime());
+		}
+
+		@Test
+		@DisplayName("handle stays detached when its path is deleted and recreated")
+		void detachedByDeleteAndRecreate() throws IOException {
+			writeFile("/f", "hello");
+			var mtime = Instant.parse("2020-01-02T03:04:05Z");
+			try (var file = fs.openFile("/f", Set.of(StandardOpenOption.WRITE))) {
+				fs.deleteFile("/f");
+				writeFile("/f", "newcomer");
+
+				assertEquals(5, file.readMetadata().size(), "the handle reports its own file, not the newcomer");
+				assertThrows(NoSuchFileException.class, () -> file.setTimes(new VfsTimes(null, mtime, null)));
+			}
+			assertEquals("newcomer", readFile("/f"));
+			assertNotEquals(mtime, fs.readNodeMetadata("/f").lastModifiedTime());
+		}
+
+		@Test
 		@DisplayName("setTimes updates mtime")
 		void setTimes() throws IOException {
 			writeFile("/f", "hello");

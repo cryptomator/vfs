@@ -214,7 +214,13 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		if (Files.isDirectory(node, LinkOption.NOFOLLOW_LINKS)) {
 			throw new IOException("Is a directory: " + path);
 		}
-		Files.delete(node);
+		renameLock.writeLock().lock(); // deleted and detached in one step, so a handle cannot see a newcomer at its path in between
+		try {
+			Files.delete(node);
+			openFiles.forEach(file -> file.detachIfAt(node));
+		} finally {
+			renameLock.writeLock().unlock();
+		}
 	}
 
 	/**
@@ -222,7 +228,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	 *
 	 * @implNote Without {@code replaceExisting} this is not atomic: NIO offers no {@code RENAME_NOREPLACE}, so it is an existence check followed by
 	 * {@code rename(2)}, and a node created at the target in between is overwritten. Open handles on the moved node and below it are re-pointed to
-	 * their new paths, since NIO cannot stat a channel.
+	 * their new paths, since NIO cannot stat a channel; handles on a replaced target are detached, see {@link NioOpenFile}.
 	 */
 	@Override
 	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
@@ -514,7 +520,8 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 		private final FileChannel channel;
 		private volatile Path node; // follows renames, see NioVfsFileSystem#rename
-		private volatile VfsNodeMetadata lastKnown; // reported once the path is gone, with the live size from the channel
+		private volatile VfsNodeMetadata lastKnown; // reported once detached, with the live size from the channel
+		private volatile boolean detached; // the path no longer names this channel's file: it was deleted or replaced, see docs/file-system-ops.md
 
 		// opens the channel, which close() releases, also if the constructor fails afterwards
 		NioOpenFile(Path node, Set<OpenOption> options, FileAttribute<?>... attrs) throws IOException {
@@ -534,6 +541,14 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 				node = to;
 			} else if (current.startsWith(from)) {
 				node = to.resolve(from.relativize(current));
+			} else {
+				detachIfAt(to); // our file was the replaced target
+			}
+		}
+
+		void detachIfAt(Path path) {
+			if (node.equals(path)) {
+				detached = true;
 			}
 		}
 
@@ -549,15 +564,18 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 
 		@Override
 		public VfsNodeMetadata readMetadata() throws IOException {
-			// NIO cannot fstat a channel; after an unlink the inode is unreachable by path, so the last known metadata with the live size is the best available
-			try {
-				var metadata = readNodeMetadata(node);
-				lastKnown = metadata;
-				return metadata;
-			} catch (NoSuchFileException _) {
-				var stale = lastKnown;
-				return new VfsNodeMetadata(stale.type(), channel.size(), stale.fileId(), stale.permissions(), stale.lastModifiedTime(), stale.lastAccessTime(), stale.changeTime(), stale.creationTime());
+			// NIO cannot fstat a channel; once detached, the path says nothing about our file, so the last known metadata with the live size is the best available
+			if (!detached) {
+				try {
+					var metadata = readNodeMetadata(node);
+					lastKnown = metadata;
+					return metadata;
+				} catch (NoSuchFileException _) {
+					detached = true; // unlinked behind our back; a file created at the path later on is not ours either
+				}
 			}
+			var stale = lastKnown;
+			return new VfsNodeMetadata(stale.type(), channel.size(), stale.fileId(), stale.permissions(), stale.lastModifiedTime(), stale.lastAccessTime(), stale.changeTime(), stale.creationTime());
 		}
 
 		@Override
@@ -565,8 +583,17 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 			NioVfsFileSystem.truncate(channel, size);
 		}
 
+		/**
+		 * {@inheritDoc}
+		 *
+		 * @implNote NIO can only set times through a path, not through a channel. Once the handle is detached (its node was deleted or replaced, see
+		 * {@code docs/file-system-ops.md}) the path may name somebody else's file, so this fails with {@link NoSuchFileException} instead of touching it.
+		 */
 		@Override
 		public void setTimes(VfsTimes times) throws IOException {
+			if (detached) {
+				throw new NoSuchFileException(node.toString(), null, "handle is detached from its path");
+			}
 			NioVfsFileSystem.setTimes(node, times);
 		}
 
