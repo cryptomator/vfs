@@ -200,8 +200,8 @@ final class InMemoryVfsFileSystem implements VfsFileSystem {
 		if (node.directory) {
 			throw new FileSystemException(path, null, "Is a directory");
 		}
-		if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
-			node.data = new byte[0];
+		if (options.contains(StandardOpenOption.TRUNCATE_EXISTING) && options.contains(StandardOpenOption.WRITE)) {
+			node.data = new byte[0]; // like NIO, truncation is ignored on read-only opens
 		}
 		return new InMemoryFile(node);
 	}

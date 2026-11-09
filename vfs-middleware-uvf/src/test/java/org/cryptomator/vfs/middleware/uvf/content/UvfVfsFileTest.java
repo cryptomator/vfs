@@ -1,5 +1,7 @@
 package org.cryptomator.vfs.middleware.uvf.content;
 
+import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
+import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
 import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
@@ -17,6 +19,8 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,7 +33,8 @@ class UvfVfsFileTest {
 
 	@BeforeEach
 	void setUp() {
-		vault = UvfUnlockedVault.create(new SecureRandom());
+		var csprng = new SecureRandom();
+		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng));
 	}
 
 	@AfterEach
@@ -37,12 +42,14 @@ class UvfVfsFileTest {
 		vault.destroy();
 	}
 
-	private UvfVfsFile createNew(VfsFile backing) {
-		return new UvfVfsFile(backing, vault, vault::createFile);
+	private final Lock creationLock = new ReentrantLock();
+
+	private UvfVfsFile createNew(VfsFile backing) throws IOException {
+		return new UvfVfsFile(vault, creationLock, () -> backing, true, false);
 	}
 
 	private UvfVfsFile openExisting(VfsFile backing) throws IOException {
-		return UvfVfsFile.open(backing, vault);
+		return new UvfVfsFile(vault, creationLock, () -> backing, false, false);
 	}
 
 	private static byte[] readAll(VfsFile file, int size) throws IOException {
@@ -208,40 +215,147 @@ class UvfVfsFileTest {
 	}
 
 	@Test
-	@DisplayName("header is written on first write and starts with the UVF magic bytes")
+	@DisplayName("header is written on open and starts with the UVF magic bytes")
 	void headerContainsMagicBytes() throws IOException {
 		var backing = new InMemoryVfsFile();
 
 		try (var file = createNew(backing)) {
-			assertEquals(0, backing.size());
+			assertTrue(backing.size() >= vault.headerSize());
 			file.write(ByteBuffer.wrap("x".getBytes(StandardCharsets.UTF_8)), 0);
 		}
 
 		assertTrue(backing.size() >= vault.headerSize());
-		ByteBuffer header = ByteBuffer.allocate(4);
+		ByteBuffer header = ByteBuffer.allocate(3); // followed by the format version byte, which the spec may bump
 		backing.read(header, 0);
-		assertArrayEquals(new byte[]{'u', 'v', 'f', 0x00}, header.array());
+		assertArrayEquals(new byte[]{'u', 'v', 'f'}, header.array());
 	}
 
 	@Test
-	@DisplayName("open of an empty backing file yields a fresh empty file")
+	@DisplayName("read-only open of an empty backing file yields an empty file and writes nothing")
 	void openEmptyBacking() throws IOException {
 		var backing = new InMemoryVfsFile();
 
 		try (var file = openExisting(backing)) {
 			assertEquals(0, file.readMetadata().size());
 		}
+
+		assertEquals(0, backing.size());
+	}
+
+	@Test
+	@DisplayName("writable open of an empty backing file persists the header right away")
+	void writableOpenPersistsHeader() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		createNew(backing).close();
+
+		assertEquals(vault.ciphertextSize(0), backing.size());
+		try (var file = openExisting(backing)) {
+			assertEquals(0, file.readMetadata().size());
+			assertEquals(-1, file.read(ByteBuffer.allocate(1), 0));
+		}
+	}
+
+	@Test
+	@DisplayName("two writable handles share one header and see each other's writes")
+	void twoWritersShareHeader() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		try (var first = createNew(backing); var second = createNew(backing)) {
+			first.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)), 0);
+			assertEquals(5, second.readMetadata().size());
+			assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), readAll(second, 100));
+
+			second.write(ByteBuffer.wrap(" world".getBytes(StandardCharsets.UTF_8)), 5);
+			assertArrayEquals("hello world".getBytes(StandardCharsets.UTF_8), readAll(first, 100));
+
+			second.truncate(4);
+			assertEquals(4, first.readMetadata().size());
+			assertArrayEquals("hell".getBytes(StandardCharsets.UTF_8), readAll(first, 100));
+		}
+	}
+
+	@Test
+	@DisplayName("a read-only handle opened on an empty backing file adopts the header of a later writer")
+	void readerAdoptsLaterHeader() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		try (var reader = openExisting(backing)) {
+			assertEquals(-1, reader.read(ByteBuffer.allocate(1), 0));
+			try (var writer = createNew(backing)) {
+				writer.write(ByteBuffer.wrap("late".getBytes(StandardCharsets.UTF_8)), 0);
+			}
+			assertEquals(4, reader.readMetadata().size());
+			assertArrayEquals("late".getBytes(StandardCharsets.UTF_8), readAll(reader, 100));
+		}
+	}
+
+	@Test
+	@DisplayName("reads within the known size do not consult the delegate's metadata")
+	void readWithinKnownSizeIsOptimistic() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		try (var file = createNew(backing)) {
+			file.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)), 0);
+			backing.metadataReads = 0;
+
+			assertEquals(5, file.read(ByteBuffer.allocate(5), 0));
+			assertEquals(0, backing.metadataReads);
+			assertEquals(-1, file.read(ByteBuffer.allocate(5), 5));
+			assertEquals(1, backing.metadataReads);
+		}
+	}
+
+	@Test
+	@DisplayName("a read recovers from a truncation, an extension and a rewrite made through another handle")
+	void readRecoversFromChangesByOtherHandle() throws IOException {
+		var backing = new InMemoryVfsFile();
+
+		try (var first = createNew(backing); var second = createNew(backing)) {
+			first.write(ByteBuffer.wrap("hello world".getBytes(StandardCharsets.UTF_8)), 0);
+
+			second.truncate(4); // shorter chunk than first expects
+			assertArrayEquals("hell".getBytes(StandardCharsets.UTF_8), readAll(first, 100));
+
+			second.write(ByteBuffer.wrap("o again".getBytes(StandardCharsets.UTF_8)), 4); // extended beyond what first expects
+			assertArrayEquals("hello again".getBytes(StandardCharsets.UTF_8), readAll(first, 100));
+
+			second.truncate(0); // rewritten at a larger size, so the chunk first expects no longer authenticates
+			second.write(ByteBuffer.wrap("something else entirely".getBytes(StandardCharsets.UTF_8)), 0);
+			assertArrayEquals("something else entirely".getBytes(StandardCharsets.UTF_8), readAll(first, 100));
+		}
 	}
 
 	@Test
 	@DisplayName("open fails on garbage")
-	void openFailsOnGarbage() throws IOException {
+	void openFailsOnGarbage() {
 		var backing = new InMemoryVfsFile();
 		byte[] garbage = new byte[vault.headerSize() + 10];
 		new SecureRandom().nextBytes(garbage);
 		backing.write(ByteBuffer.wrap(garbage), 0);
 
 		assertThrows(IOException.class, () -> openExisting(backing));
+		assertTrue(backing.closed, "a failed constructor must release the delegate it opened");
+	}
+
+	@Test
+	@DisplayName("a failure after the header was written still releases the delegate")
+	void truncateFailureClosesDelegate() throws IOException {
+		var backing = new InMemoryVfsFile() {
+			@Override
+			public void truncate(long size) throws IOException {
+				throw new IOException("disk on fire");
+			}
+		};
+		try (var writer = createNew(backing)) {
+			writer.write(ByteBuffer.wrap("content".getBytes(StandardCharsets.UTF_8)), 0);
+		}
+		backing.closed = false;
+
+		var e = assertThrows(IOException.class, () -> new UvfVfsFile(vault, creationLock, () -> backing, true, true));
+
+		assertEquals("disk on fire", e.getMessage());
+		assertTrue(backing.closed, "a failed constructor must release the delegate it opened");
 	}
 
 	@Test
@@ -280,13 +394,17 @@ class UvfVfsFileTest {
 			return length;
 		}
 
+		int metadataReads;
+		boolean closed;
+
 		@Override
 		public VfsNodeMetadata readMetadata() {
+			metadataReads++;
 			return new VfsNodeMetadata(VfsNodeType.FILE, data.length, VfsNodeMetadata.NO_FILE_ID, Set.of(), Instant.EPOCH, Instant.EPOCH, Instant.EPOCH, Instant.EPOCH);
 		}
 
 		@Override
-		public void truncate(long size) {
+		public void truncate(long size) throws IOException {
 			data = Arrays.copyOf(data, (int) size);
 		}
 
@@ -302,7 +420,7 @@ class UvfVfsFileTest {
 
 		@Override
 		public void close() {
-			// nothing to release, the content lives in memory
+			closed = true; // nothing to release, the content lives in memory, but construction failures must still get here
 		}
 
 		int size() {

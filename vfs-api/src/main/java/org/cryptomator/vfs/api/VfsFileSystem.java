@@ -13,8 +13,9 @@ import java.util.Set;
  * <p>
  * All paths are absolute, {@code /}-separated and refer to nodes within this file system. The namespace is path-based; data operations on an open file go
  * through the {@link VfsFile} handle returned by {@link #openFile} or {@link #createFile}, and must keep working after the file has been renamed or deleted.
- * Optional capabilities (xattrs, symbolic links) are advertised via {@link #capabilities()}; their methods throw {@link UnsupportedOperationException}
- * when unsupported.
+ * Names are taken as given; whether names that differ only in case or Unicode normalization form denote different nodes is advertised via
+ * {@link #capabilities()}. Optional capabilities (xattrs, symbolic links) are advertised there as well; their methods throw
+ * {@link UnsupportedOperationException} when unsupported.
  */
 public interface VfsFileSystem {
 

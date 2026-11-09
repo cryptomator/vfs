@@ -40,6 +40,8 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * A {@link VfsFileSystem} decorator that encrypts writes and decrypts reads according to the Universal Vault Format specification.
@@ -52,6 +54,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
 	private static final Logger LOG = LoggerFactory.getLogger(UvfFileSystem.class);
 	private static final String VAULT_CONFIG_PATH = "/vault.uvf";
+	private static final long MAX_METADATA_FILE_SIZE = 1024L * 1024;
 	private static final Set<PosixFilePermission> DEFAULT_PERMISSIONS = Set.of(); // let the delegate apply its defaults
 
 	private final VfsFileSystem delegate;
@@ -59,14 +62,16 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	private final DirectoryPathResolver pathResolver;
 	private final VaultReader reader;
 	private final VfsCapabilities capabilities;
+	private final Lock emptyFileLock = new ReentrantLock(); // the first writable handle on an empty ciphertext persists the header; a second one must not race it with its own
 
 	UvfFileSystem(VfsFileSystem delegate, UvfUnlockedVault vault) {
 		this.delegate = delegate;
 		this.vault = vault;
 		this.reader = relPath -> readAll(delegate, "/" + relPath);
 		this.pathResolver = new DirectoryPathResolver(vault, reader);
-		// encrypted names are compared exactly; xattrs are not yet part of this middleware
-		this.capabilities = new VfsCapabilities(true, true, false, 0);
+		// ciphertext names are compared exactly, but cryptolib normalizes cleartext names to NFC before encrypting them, so every form of a name denotes the same node;
+		// xattrs are not yet part of this middleware
+		this.capabilities = new VfsCapabilities(true, false, true, false, 0);
 	}
 
 	/**
@@ -102,12 +107,10 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	/**
 	 * Creates a new vault on the delegate filesystem: writes {@code vault.uvf} and the root content directory, then opens the vault.
 	 * <p>
-	 * The vault must be fully configured, i.e. {@link UvfUnlockedVault#setPassword(CharSequence)} or {@link UvfUnlockedVault#setMemberKey(javax.crypto.SecretKey)}
-	 * and {@link UvfUnlockedVault#setRecoveryKey(java.security.interfaces.ECPublicKey)} must have been called. Ownership of {@code vault} passes to the returned
-	 * filesystem, which destroys it on {@link #close()}, also if initialization fails.
+	 * Ownership of {@code vault} passes to the returned filesystem, which destroys it on {@link #close()}, also if initialization fails.
 	 *
 	 * @param delegate the underlying filesystem that will store the ciphertext
-	 * @param vault a freshly created, configured vault, e.g. from {@link UvfUnlockedVault#create(java.security.SecureRandom)}
+	 * @param vault a freshly created vault from {@link UvfUnlockedVault#create(java.security.SecureRandom, org.cryptomator.cryptolib.api.UvfKeyEncryptionKey, org.cryptomator.cryptolib.api.UvfRecoveryKey)}
 	 * @return a ready-to-use UVF filesystem that must be closed to destroy its key material
 	 * @throws java.nio.file.FileAlreadyExistsException if the delegate already holds a {@code vault.uvf}
 	 * @throws IOException if the vault files cannot be written
@@ -234,35 +237,30 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	@Override
 	public VfsFile openFile(String path, Set<StandardOpenOption> options) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextFile = delegate.openFile(resolved.contentsPath(), ciphertextOptions(options));
-		return wrap(ciphertextFile, options);
+		var ciphertextOptions = ciphertextOptions(options);
+		return open(() -> delegate.openFile(resolved.contentsPath(), ciphertextOptions), options, ciphertextOptions);
 	}
 
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
 		var resolved = pathResolver.resolve(path);
-		var ciphertextFile = delegate.createFile(resolved.contentsPath(), ciphertextOptions(options), permissions);
-		return wrap(ciphertextFile, options);
+		var ciphertextOptions = ciphertextOptions(options);
+		return open(() -> delegate.createFile(resolved.contentsPath(), ciphertextOptions, permissions), options, ciphertextOptions);
 	}
 
-	private VfsFile wrap(VfsFile ciphertextFile, Set<StandardOpenOption> options) throws IOException {
-		try {
-			if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
-				return new UvfVfsFile(ciphertextFile, vault, vault::createFile); // the delegate truncated the ciphertext, the new header is written on first write
-			} else {
-				return UvfVfsFile.open(ciphertextFile, vault);
-			}
-		} catch (IOException e) {
-			deleteQuietly(e, ciphertextFile::close);
-			throw e;
-		}
+	private VfsFile open(UvfVfsFile.Opener opener, Set<StandardOpenOption> options, Set<StandardOpenOption> ciphertextOptions) throws IOException {
+		boolean writable = ciphertextOptions.contains(StandardOpenOption.WRITE);
+		boolean truncate = options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+		return new UvfVfsFile(vault, emptyFileLock, opener, writable, truncate);
 	}
 
-	// encrypted I/O always needs READ access (header, read-modify-write of partial chunks) and is strictly positional, so APPEND must not leak through
+	// encrypted I/O always needs READ access (header, read-modify-write of partial chunks) and is strictly positional, so APPEND must not leak through;
+	// TRUNCATE_EXISTING is applied by UvfVfsFile to the cleartext so that the header survives and the only empty ciphertexts are those never written to
 	private static EnumSet<StandardOpenOption> ciphertextOptions(Set<StandardOpenOption> options) {
 		var result = EnumSet.noneOf(StandardOpenOption.class);
 		result.addAll(options);
 		result.add(StandardOpenOption.READ);
+		result.remove(StandardOpenOption.TRUNCATE_EXISTING);
 		if (result.remove(StandardOpenOption.APPEND)) {
 			result.add(StandardOpenOption.WRITE);
 		}
@@ -291,22 +289,48 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		delegate.deleteDirectory(resolved.entryPath());
 	}
 
+	/**
+	 * {@inheritDoc}
+	 *
+	 * @implNote Replacing a target is only atomic for a file replacing a file. Directories and symbolic links are directories in the ciphertext, which
+	 * no delegate can replace in one step, so in every other combination the target is deleted before the move: a concurrent lookup may see it missing,
+	 * and a failing move leaves it deleted.
+	 */
 	@Override
 	public void rename(String sourcePath, String targetPath, boolean replaceExisting) throws IOException {
+		if (targetPath.startsWith(sourcePath + "/")) {
+			// the ciphertext layout is flat, so the delegate cannot notice that the move would orphan the whole subtree
+			throw new FileSystemException(sourcePath, targetPath, "Cannot move a directory into itself");
+		}
 		var source = pathResolver.resolve(sourcePath);
+		var sourceType = nodeType(source, delegate.readNodeMetadata(source.entryPath())); // fails before anything is touched if the source is missing
+		if (sourcePath.equals(targetPath)) {
+			return;
+		}
 		var target = pathResolver.resolve(targetPath);
-		var targetMetadata = replaceExisting ? metadataOrNull(target.entryPath()) : null;
-		if (targetMetadata != null && targetMetadata.type() == VfsNodeType.DIRECTORY) {
-			// directory and symlink entries are ciphertext directories with content, which the delegate can never replace; remove them first
+		var targetMetadata = replaceExisting ? metadataOrNull(target.entryPath()) : null; // without the flag the delegate's own no-replace check stays atomic
+		if (targetMetadata != null) {
 			switch (nodeType(target, targetMetadata)) {
 				case DIRECTORY -> {
-					if (nodeType(source, delegate.readNodeMetadata(source.entryPath())) != VfsNodeType.DIRECTORY) {
+					if (sourceType != VfsNodeType.DIRECTORY) {
 						throw new FileSystemException(sourcePath, targetPath, "Is a directory");
 					}
-					deleteDirectory(targetPath);
+					deleteDirectory(targetPath); // refuses non-empty directories
 				}
-				case SYMBOLIC_LINK -> deleteSymbolicLink(target);
-				case FILE -> throw new AssertionError();
+				case SYMBOLIC_LINK -> {
+					if (sourceType == VfsNodeType.DIRECTORY) {
+						throw new FileSystemException(sourcePath, targetPath, "Not a directory");
+					}
+					deleteSymbolicLink(target);
+				}
+				case FILE -> {
+					if (sourceType == VfsNodeType.DIRECTORY) {
+						throw new FileSystemException(sourcePath, targetPath, "Not a directory");
+					}
+					if (sourceType == VfsNodeType.SYMBOLIC_LINK) {
+						delegate.deleteFile(target.contentsPath()); // file over file is left to the delegate's atomic replace
+					}
+				}
 			}
 		}
 		try {
@@ -372,7 +396,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		long size = switch (type) {
 			case FILE -> cleartextSize(resolved, entryMetadata.size());
 			case DIRECTORY -> entryMetadata.size();
-			case SYMBOLIC_LINK -> symlinkTarget(resolved).getBytes(StandardCharsets.UTF_8).length;
+			case SYMBOLIC_LINK -> symlinkTargetLength(resolved);
 		};
 		return new VfsNodeMetadata(
 				type,
@@ -407,11 +431,21 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		}
 	}
 
+	// a damaged link must not take the whole directory listing down with it either, so it is reported as empty; reading it still fails
+	private long symlinkTargetLength(ResolvedPath resolved) {
+		try {
+			return symlinkTarget(resolved).getBytes(StandardCharsets.UTF_8).length;
+		} catch (IOException e) { // unauthentic, malformed or oversized symlink.uvf
+			LOG.warn("Reporting symbolic link {} as empty, its target cannot be read: {}", resolved.symlinkFilePath(), e.getMessage());
+			return 0;
+		}
+	}
+
 	private String symlinkTarget(ResolvedPath resolved) throws IOException {
 		try {
 			return resolved.node().symlinkTarget(reader);
-		} catch (AuthenticationFailedException e) {
-			throw new IOException("Unauthentic symbolic link", e);
+		} catch (AuthenticationFailedException | IllegalArgumentException e) { // unauthentic or malformed symlink.uvf
+			throw new IOException("Invalid symbolic link", e);
 		}
 	}
 
@@ -433,9 +467,14 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		}
 	}
 
+	// reads vault.uvf, dir.uvf or symlink.uvf, all of which are tiny; the bound keeps a damaged or hostile ciphertext from exhausting the heap before authentication
 	private static byte[] readAll(VfsFileSystem delegate, String ciphertextPath) throws IOException {
 		try (var file = delegate.openFile(ciphertextPath, Set.of(StandardOpenOption.READ))) {
-			var buf = ByteBuffer.allocate(Math.toIntExact(file.readMetadata().size()));
+			long size = file.readMetadata().size();
+			if (size > MAX_METADATA_FILE_SIZE) {
+				throw new IOException(ciphertextPath + " is " + size + " bytes, refusing to read more than " + MAX_METADATA_FILE_SIZE);
+			}
+			var buf = ByteBuffer.allocate((int) size);
 			while (buf.hasRemaining() && file.read(buf, buf.position()) >= 0) {
 				// keep reading
 			}

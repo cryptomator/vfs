@@ -46,6 +46,7 @@ class FuseVfsOperationsTest {
 	private static final int EINVAL = 22;
 	private static final int ERANGE = 34;
 	private static final int ENOATTR = 93;
+	private static final int ENOTSUP = 95;
 
 	private VfsFileSystem fs;
 	private Errno errno;
@@ -60,6 +61,7 @@ class FuseVfsOperationsTest {
 		Mockito.doReturn(EINVAL).when(errno).einval();
 		Mockito.doReturn(ERANGE).when(errno).erange();
 		Mockito.doReturn(ENOATTR).when(errno).enoattr();
+		Mockito.doReturn(ENOTSUP).when(errno).enotsup();
 		Mockito.doReturn(VfsCapabilities.MINIMAL).when(fs).capabilities();
 		ops = new FuseVfsOperations(fs, errno);
 	}
@@ -100,7 +102,7 @@ class FuseVfsOperationsTest {
 		@Test
 		@DisplayName("adds symlink and xattr operations when supported")
 		void full() {
-			Mockito.doReturn(new VfsCapabilities(true, true, true, VfsCapabilities.NO_LIMIT)).when(fs).capabilities();
+			Mockito.doReturn(new VfsCapabilities(true, true, true, true, VfsCapabilities.NO_LIMIT)).when(fs).capabilities();
 
 			var supported = ops.supportedOperations();
 
@@ -320,6 +322,37 @@ class FuseVfsOperationsTest {
 		}
 
 		@Test
+		@DisplayName("a normalization-sensitive file system gets its names verbatim in both directions")
+		void verbatimForSensitiveFileSystem() throws IOException {
+			var sensitiveOps = new FuseVfsOperations(fs, errno); // MINIMAL capabilities are normalization-sensitive
+			Mockito.doReturn(metadata(VfsNodeType.DIRECTORY, 0)).when(fs).readNodeMetadata("/");
+			Mockito.doReturn(stream(List.of(new VfsDirectoryEntry(NFC.substring(1), metadata(VfsNodeType.FILE, 1))))).when(fs).openDirectory("/");
+			var names = new ArrayList<String>();
+			DirFiller filler = (name, statFiller, offset, flags) -> {
+				names.add(name);
+				return 0;
+			};
+
+			assertEquals(0, sensitiveOps.access(NFD, 0));
+			assertEquals(0, sensitiveOps.readdir("/", filler, 0, Mockito.mock(FileInfo.class), 0));
+
+			Mockito.verify(fs).checkAccess(NFD, Set.of());
+			assertEquals(List.of(".", "..", NFC.substring(1)), names);
+		}
+
+		@Test
+		@DisplayName("the transcoder is chosen by the file system's normalization sensitivity")
+		void chosenByCapabilities() {
+			var sensitive = new VfsCapabilities(true, true, false, false, 0);
+			var insensitive = new VfsCapabilities(true, false, false, false, 0);
+
+			assertEquals(FileNameTranscoder.VERBATIM, FileNameTranscoder.forFileSystem(sensitive));
+			assertEquals(FileNameTranscoder.forCurrentPlatform(), FileNameTranscoder.forFileSystem(insensitive));
+			assertEquals(NFD, FileNameTranscoder.VERBATIM.toVfs(NFD));
+			assertEquals(NFC, FileNameTranscoder.VERBATIM.toFuse(NFC));
+		}
+
+		@Test
 		@DisplayName("platform transcoder is NFD towards FUSE only on macOS")
 		void platformDefault() {
 			var transcoder = FileNameTranscoder.forCurrentPlatform();
@@ -393,14 +426,25 @@ class FuseVfsOperationsTest {
 		}
 
 		@Test
-		@DisplayName("setxattr maps flags to policies")
+		@DisplayName("an unsupported attribute name maps to ENOTSUP")
+		void unsupportedName() throws IOException {
+			Mockito.doThrow(new UnsupportedOperationException("not in the user namespace")).when(fs).getXattr("/f", "security.selinux");
+			Mockito.doThrow(new UnsupportedOperationException("not in the user namespace")).when(fs).removeXattr("/f", "security.selinux");
+
+			assertEquals(-ENOTSUP, ops.getxattr("/f", "security.selinux", ByteBuffer.allocate(0)));
+			assertEquals(-ENOTSUP, ops.removexattr("/f", "security.selinux"));
+		}
+
+		@Test
+		@DisplayName("setxattr maps the platform's flags to policies")
 		void setxattrFlags() throws IOException {
 			var value = ByteBuffer.allocate(1);
+			var flags = XattrFlags.forCurrentPlatform();
 
 			assertEquals(0, ops.setxattr("/f", "user.a", value, 0));
-			assertEquals(0, ops.setxattr("/f", "user.a", value, 1));
-			assertEquals(0, ops.setxattr("/f", "user.a", value, 2));
-			assertEquals(-EINVAL, ops.setxattr("/f", "user.a", value, 3));
+			assertEquals(0, ops.setxattr("/f", "user.a", value, flags.create()));
+			assertEquals(0, ops.setxattr("/f", "user.a", value, flags.replace()));
+			assertEquals(-EINVAL, ops.setxattr("/f", "user.a", value, flags.create() | flags.replace()));
 
 			Mockito.verify(fs).setXattr("/f", "user.a", value, VfsXattrPolicy.CREATE_OR_REPLACE);
 			Mockito.verify(fs).setXattr("/f", "user.a", value, VfsXattrPolicy.CREATE_ONLY);

@@ -30,7 +30,7 @@ class UvfDirectoryStreamTest {
 
 	@Test
 	void opensCiphertextDirectoryOnConstruction() throws IOException {
-		try (var stream = new UvfDirectoryStream(delegate, "/d/AB/CDEF", entry -> entry)) {
+		try (var _ = new UvfDirectoryStream(delegate, "/d/AB/CDEF", entry -> entry)) {
 			Mockito.verify(delegate).openDirectory("/d/AB/CDEF");
 		}
 	}

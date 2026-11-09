@@ -11,6 +11,16 @@ This document records the research behind the shape of `vfs-api`: which operatio
 
 Common denominator: a **path-based namespace plus an opaque open handle for data operations**. FSKit is the odd one out; its frontend keeps an `FSItem` to path map (libfuse's high-level layer does the same internally), which works as long as the API never requires item identity.
 
+### Open handles outlive their paths
+
+Every frontend may keep a `VfsFile` open while the node is renamed, deleted or replaced underneath it (POSIX unlink-while-open, WinFsp and SMB delete-on-close, `rename` over an open target). The handle must keep working on the data of the node it was opened on. Backends that address nodes by path (NIO) therefore track two states per handle:
+
+- **Attached**: the handle's path still names its node. Renames of the node or of an ancestor re-point the path, so metadata and timestamp updates go through it.
+- **Detached**: the path no longer names the handle's node, because the node was deleted, or another node was moved over it. A detached handle keeps reading, writing, truncating and syncing its data, reports the metadata it last saw together with the live size, and refuses operations that only work through a path, such as `setTimes`, with `NoSuchFileException`.
+
+> [!IMPORTANT]
+> A backend can only detach handles for changes it performed itself. If a third-party process deletes or replaces the node behind the backend's back, the handle notices a vanished path on its next metadata read and detaches then, but a replacement it cannot tell apart from its own node until the backend has a way to compare node identity (`fstat`, which NIO lacks).
+
 ## Operation matrix
 
 ✓ native, ~ emulable or partial, ✗ absent. The last column maps each row to `vfs-api`.
@@ -49,7 +59,7 @@ Hard links, byte-range locks, server-side copy, preallocation and hole seeking, 
 
 ## Frontend quirks worth remembering
 
-- **macFUSE and Unicode normalization.** macOS passes names in NFD; macFUSE keys kernel nodes by exact name bytes, so an NFC name from `readdir` and an NFD lookup of the same file yield two inode numbers and Finder reloads the listing on every selection. The FUSE frontend returns NFD on macOS and normalizes to NFC towards the VFS. cryptolib itself normalizes names to NFC before encryption.
+- **macFUSE and Unicode normalization.** macOS passes names in NFD; macFUSE keys kernel nodes by exact name bytes, so an NFC name from `readdir` and an NFD lookup of the same file yield two inode numbers and Finder reloads the listing on every selection. The FUSE frontend returns NFD on macOS and normalizes to NFC towards the VFS, but only for file systems whose `VfsCapabilities.normalizationSensitive()` is `false`, i.e. that resolve every form of a name to the same node (UVF, since cryptolib normalizes names to NFC before encryption; APFS and HFS+). For normalization-sensitive file systems (ext4, NTFS, most POSIX) names pass through verbatim in both directions, because any change of form would make files unreachable; on macOS this reproduces the behaviour of a native mount of such a volume, where Finder cannot open NFC-named files.
 - **FUSE `symlink` argument order.** libfuse passes the link content first and the link path second. jfuse's parameter names (`linkname`, `target`) suggest the opposite.
 - **libfuse3 readdirplus** is only enabled when the `init` callback is wired, so `INIT` must be in jfuse's supported operation set.
 - **macFUSE** is a libfuse 2.x API without readdirplus; **FUSE-T** ignores `access`, never forwards locks and cannot set atime and mtime independently.

@@ -36,6 +36,20 @@ public interface VfsFile extends AutoCloseable {
 	 */
 	VfsNodeMetadata readMetadata() throws IOException;
 
+	// TODO decide whether a cheaper size query is worth an API extension. The UVF middleware calls readMetadata() before every write, truncate and end-of-file read
+	//  only to learn the ciphertext size, which on the NIO backend is a path-based stat, whereas FileChannel.size() is an fstat on the open descriptor. Measure
+	//  first: a JMH benchmark on vfs-backend-nio comparing readMetadata() with FileChannel.size() on a local volume and on a network mount, and an
+	//  async-profiler run of a sequential-write and an append-heavy workload through the UVF middleware to see whether the stat shows up at all. Only if it does,
+	//  uncomment this method and implement it in every backend:
+	//
+	// /**
+	//  * Reads the current size of this file, which is cheaper than {@link #readMetadata()} on backends that can query the open handle instead of the path.
+	//  *
+	//  * @return the current size in bytes
+	//  * @throws IOException if the size cannot be read
+	//  */
+	// long size() throws IOException;
+
 	/**
 	 * Sets the size of this file, truncating or zero-extending it.
 	 *

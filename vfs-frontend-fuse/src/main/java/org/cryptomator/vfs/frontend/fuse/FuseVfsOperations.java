@@ -17,7 +17,6 @@ import org.cryptomator.vfs.api.VfsMetadata;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.api.VfsTimes;
-import org.cryptomator.vfs.api.VfsXattrPolicy;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,9 +51,7 @@ public final class FuseVfsOperations implements FuseOperations {
 	// renameat2(2) flag, not exposed by jfuse; RENAME_EXCHANGE (2) is deliberately unsupported
 	private static final int RENAME_NOREPLACE = 1;
 
-	// setxattr(2) flags, identical on Linux and macOS
-	private static final int XATTR_CREATE = 1;
-	private static final int XATTR_REPLACE = 2;
+	private static final XattrFlags XATTR_FLAGS = XattrFlags.forCurrentPlatform();
 
 	private final VfsFileSystem fileSystem;
 	private final Errno errno;
@@ -65,13 +62,13 @@ public final class FuseVfsOperations implements FuseOperations {
 	private final AtomicLong nextFileHandle = new AtomicLong(1L);
 
 	/**
-	 * Creates an adapter that reports all nodes as owned by the current process user and transcodes names for the current platform.
+	 * Creates an adapter that reports all nodes as owned by the current process user and transcodes names as the file system's capabilities and the current platform require.
 	 *
 	 * @param fileSystem the file system to expose
 	 * @param errno the platform's error codes
 	 */
 	public FuseVfsOperations(VfsFileSystem fileSystem, Errno errno) {
-		this(fileSystem, errno, currentUserId("uid"), currentUserId("gid"), FileNameTranscoder.forCurrentPlatform());
+		this(fileSystem, errno, currentUserId("uid"), currentUserId("gid"), FileNameTranscoder.forFileSystem(fileSystem.capabilities()));
 	}
 
 	/**
@@ -437,17 +434,14 @@ public final class FuseVfsOperations implements FuseOperations {
 			return size;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
 	@Override
 	public int setxattr(String fusePath, String name, ByteBuffer value, int flags) {
-		var policy = switch (flags & (XATTR_CREATE | XATTR_REPLACE)) {
-			case XATTR_CREATE -> VfsXattrPolicy.CREATE_ONLY;
-			case XATTR_REPLACE -> VfsXattrPolicy.REPLACE_ONLY;
-			case 0 -> VfsXattrPolicy.CREATE_OR_REPLACE;
-			default -> null;
-		};
+		var policy = XATTR_FLAGS.policy(flags);
 		if (policy == null) {
 			return -errno.einval();
 		}
@@ -456,6 +450,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return 0;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
@@ -479,6 +475,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return size;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
@@ -489,6 +487,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return 0;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
