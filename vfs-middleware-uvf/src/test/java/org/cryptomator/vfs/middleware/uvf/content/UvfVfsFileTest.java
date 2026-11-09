@@ -19,6 +19,8 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,12 +42,14 @@ class UvfVfsFileTest {
 		vault.destroy();
 	}
 
+	private final Lock creationLock = new ReentrantLock();
+
 	private UvfVfsFile createNew(VfsFile backing) throws IOException {
-		return UvfVfsFile.open(backing, vault, true);
+		return new UvfVfsFile(vault, creationLock, () -> backing, true, false);
 	}
 
 	private UvfVfsFile openExisting(VfsFile backing) throws IOException {
-		return UvfVfsFile.open(backing, vault, false);
+		return new UvfVfsFile(vault, creationLock, () -> backing, false, false);
 	}
 
 	private static byte[] readAll(VfsFile file, int size) throws IOException {
@@ -331,6 +335,27 @@ class UvfVfsFileTest {
 		backing.write(ByteBuffer.wrap(garbage), 0);
 
 		assertThrows(IOException.class, () -> openExisting(backing));
+		assertTrue(backing.closed, "a failed constructor must release the delegate it opened");
+	}
+
+	@Test
+	@DisplayName("a failure after the header was written still releases the delegate")
+	void truncateFailureClosesDelegate() throws IOException {
+		var backing = new InMemoryVfsFile() {
+			@Override
+			public void truncate(long size) throws IOException {
+				throw new IOException("disk on fire");
+			}
+		};
+		try (var writer = createNew(backing)) {
+			writer.write(ByteBuffer.wrap("content".getBytes(StandardCharsets.UTF_8)), 0);
+		}
+		backing.closed = false;
+
+		var e = assertThrows(IOException.class, () -> new UvfVfsFile(vault, creationLock, () -> backing, true, true));
+
+		assertEquals("disk on fire", e.getMessage());
+		assertTrue(backing.closed, "a failed constructor must release the delegate it opened");
 	}
 
 	@Test
@@ -370,6 +395,7 @@ class UvfVfsFileTest {
 		}
 
 		int metadataReads;
+		boolean closed;
 
 		@Override
 		public VfsNodeMetadata readMetadata() {
@@ -378,7 +404,7 @@ class UvfVfsFileTest {
 		}
 
 		@Override
-		public void truncate(long size) {
+		public void truncate(long size) throws IOException {
 			data = Arrays.copyOf(data, (int) size);
 		}
 
@@ -394,7 +420,7 @@ class UvfVfsFileTest {
 
 		@Override
 		public void close() {
-			// nothing to release, the content lives in memory
+			closed = true; // nothing to release, the content lives in memory, but construction failures must still get here
 		}
 
 		int size() {

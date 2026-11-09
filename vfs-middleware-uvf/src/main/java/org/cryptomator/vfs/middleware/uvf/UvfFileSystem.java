@@ -69,7 +69,8 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		this.vault = vault;
 		this.reader = relPath -> readAll(delegate, "/" + relPath);
 		this.pathResolver = new DirectoryPathResolver(vault, reader);
-		// ciphertext names are compared exactly, but cryptolib normalizes cleartext names to NFC before encrypting them, so every form of a name denotes the same node; xattrs are not yet part of this middleware
+		// ciphertext names are compared exactly, but cryptolib normalizes cleartext names to NFC before encrypting them, so every form of a name denotes the same node;
+		// xattrs are not yet part of this middleware
 		this.capabilities = new VfsCapabilities(true, false, true, false, 0);
 	}
 
@@ -237,44 +238,24 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	public VfsFile openFile(String path, Set<StandardOpenOption> options) throws IOException {
 		var resolved = pathResolver.resolve(path);
 		var ciphertextOptions = ciphertextOptions(options);
-		var ciphertextFile = delegate.openFile(resolved.contentsPath(), ciphertextOptions);
-		return wrap(ciphertextFile, ciphertextOptions.contains(StandardOpenOption.WRITE), options.contains(StandardOpenOption.TRUNCATE_EXISTING));
+		return open(() -> delegate.openFile(resolved.contentsPath(), ciphertextOptions), options, ciphertextOptions);
 	}
 
 	@Override
 	public VfsFile createFile(String path, Set<StandardOpenOption> options, Set<PosixFilePermission> permissions) throws IOException {
 		var resolved = pathResolver.resolve(path);
 		var ciphertextOptions = ciphertextOptions(options);
-		var ciphertextFile = delegate.createFile(resolved.contentsPath(), ciphertextOptions, permissions);
-		return wrap(ciphertextFile, ciphertextOptions.contains(StandardOpenOption.WRITE), options.contains(StandardOpenOption.TRUNCATE_EXISTING));
+		return open(() -> delegate.createFile(resolved.contentsPath(), ciphertextOptions, permissions), options, ciphertextOptions);
 	}
 
-	// truncation happens on the cleartext handle (keeping the header), so the only empty ciphertexts are those that have never been written to
-	private VfsFile wrap(VfsFile ciphertextFile, boolean writable, boolean truncate) throws IOException {
-		try {
-			UvfVfsFile file;
-			if (writable && ciphertextFile.readMetadata().size() == 0) {
-				emptyFileLock.lock();
-				try {
-					file = UvfVfsFile.open(ciphertextFile, vault, true); // re-checks the size, so a header persisted by the handle that held the lock before is picked up
-				} finally {
-					emptyFileLock.unlock();
-				}
-			} else {
-				file = UvfVfsFile.open(ciphertextFile, vault, writable);
-			}
-			if (writable && truncate) { // like NIO, truncation is ignored on read-only opens
-				file.truncate(0);
-			}
-			return file;
-		} catch (IOException e) {
-			deleteQuietly(e, ciphertextFile::close);
-			throw e;
-		}
+	private VfsFile open(UvfVfsFile.Opener opener, Set<StandardOpenOption> options, Set<StandardOpenOption> ciphertextOptions) throws IOException {
+		boolean writable = ciphertextOptions.contains(StandardOpenOption.WRITE);
+		boolean truncate = options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+		return new UvfVfsFile(vault, emptyFileLock, opener, writable, truncate);
 	}
 
 	// encrypted I/O always needs READ access (header, read-modify-write of partial chunks) and is strictly positional, so APPEND must not leak through;
-	// TRUNCATE_EXISTING is applied to the cleartext by wrap() so that the header survives
+	// TRUNCATE_EXISTING is applied by UvfVfsFile to the cleartext so that the header survives and the only empty ciphertexts are those never written to
 	private static EnumSet<StandardOpenOption> ciphertextOptions(Set<StandardOpenOption> options) {
 		var result = EnumSet.noneOf(StandardOpenOption.class);
 		result.addAll(options);

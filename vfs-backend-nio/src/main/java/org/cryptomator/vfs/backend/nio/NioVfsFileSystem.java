@@ -10,6 +10,7 @@ import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.api.VfsTimes;
 import org.cryptomator.vfs.api.VfsXattrPolicy;
+import org.cryptomator.vfs.common.Closeables;
 import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
@@ -156,7 +157,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		if (Files.isSymbolicLink(node)) {
 			throw new NotDirectoryException(path); // newDirectoryStream would follow the link
 		}
-		return new NioDirectoryStream(Files.newDirectoryStream(node));
+		return new NioDirectoryStream(node);
 	}
 
 	@Override
@@ -192,15 +193,9 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		openOptions.add(LinkOption.NOFOLLOW_LINKS); // O_NOFOLLOW, a symbolic link is never opened as a file
 		renameLock.readLock().lock();
 		try {
-			var channel = FileChannel.open(node, openOptions, attrs);
-			try {
-				var file = new NioOpenFile(node, channel, readNodeMetadata(node));
-				openFiles.add(file);
-				return file;
-			} catch (IOException e) {
-				channel.close();
-				throw e;
-			}
+			var file = new NioOpenFile(node, openOptions, attrs);
+			openFiles.add(file);
+			return file;
 		} finally {
 			renameLock.readLock().unlock();
 		}
@@ -466,8 +461,9 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		private final DirectoryStream<Path> delegate;
 		private boolean iterated;
 
-		NioDirectoryStream(DirectoryStream<Path> delegate) {
-			this.delegate = delegate;
+		// opens the directory stream, which close() releases
+		NioDirectoryStream(Path node) throws IOException {
+			this.delegate = Files.newDirectoryStream(node);
 		}
 
 		@Override
@@ -520,10 +516,16 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		private volatile Path node; // follows renames, see NioVfsFileSystem#rename
 		private volatile VfsNodeMetadata lastKnown; // reported once the path is gone, with the live size from the channel
 
-		NioOpenFile(Path node, FileChannel channel, VfsNodeMetadata metadata) {
+		// opens the channel, which close() releases, also if the constructor fails afterwards
+		NioOpenFile(Path node, Set<OpenOption> options, FileAttribute<?>... attrs) throws IOException {
 			this.node = node;
-			this.channel = channel;
-			this.lastKnown = metadata;
+			this.channel = FileChannel.open(node, options, attrs);
+			try {
+				this.lastKnown = readNodeMetadata(node);
+			} catch (IOException | RuntimeException e) {
+				Closeables.suppressWhileClosing(channel, e);
+				throw e;
+			}
 		}
 
 		void moved(Path from, Path to) {

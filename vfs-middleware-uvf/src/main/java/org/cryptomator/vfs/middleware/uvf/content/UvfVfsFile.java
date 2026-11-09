@@ -7,10 +7,12 @@ import org.cryptomator.vfs.api.VfsFile;
 import org.cryptomator.vfs.api.VfsNodeMetadata;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.api.VfsTimes;
+import org.cryptomator.vfs.common.Closeables;
 
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.concurrent.locks.Lock;
 
 /**
  * A {@link VfsFile} decorator that transparently encrypts writes and decrypts reads using the vault's chunked file format.
@@ -25,43 +27,88 @@ import java.nio.ByteBuffer;
  */
 public final class UvfVfsFile implements VfsFile {
 
-	private final VfsFile delegate;
+	/**
+	 * Opens the ciphertext file on the delegate file system.
+	 */
+	@FunctionalInterface
+	public interface Opener {
+
+		/**
+		 * Opens the ciphertext file.
+		 *
+		 * @return the open ciphertext file, owned by the {@link UvfVfsFile} from now on
+		 * @throws IOException if the file cannot be opened
+		 */
+		VfsFile open() throws IOException;
+	}
+
 	private final UnlockedVault vault;
+	private final VfsFile delegate;
 	private VaultFile vaultFile; // header, file key and cleartext size, valid for a ciphertext of ciphertextSize bytes
 	private long ciphertextSize; // 0 while the fresh header of an empty file has not been persisted
 
-	// acquires the vault file, which close() releases
-	private UvfVfsFile(VfsFile delegate, UnlockedVault vault) throws IOException {
-		this.delegate = delegate;
-		this.vault = vault;
-		this.ciphertextSize = delegate.readMetadata().size();
-		this.vaultFile = load(delegate, vault, ciphertextSize);
-	}
-
 	/**
-	 * Opens a ciphertext file, reading and authenticating its header.
+	 * Opens a ciphertext file, reading and authenticating its header. Everything acquired here is released by {@link #close()}, also if this constructor fails.
 	 * <p>
 	 * An empty ciphertext file is an empty cleartext file. A writable handle immediately writes a fresh header to it, so that all later opens share that header; a
-	 * read-only handle keeps a fresh header in memory until the ciphertext is written by someone else. The caller must make sure that two writable handles are not
-	 * opened concurrently on the same empty ciphertext, or the second header would overwrite the first.
+	 * read-only handle keeps a fresh header in memory until the ciphertext is written by someone else. {@code TRUNCATE_EXISTING} is applied to the cleartext of
+	 * a writable handle after opening, so the header survives; like NIO, it is ignored on read-only handles.
 	 *
-	 * @param delegate the ciphertext file on the delegate filesystem
 	 * @param vault the unlocked vault
-	 * @param writable whether the delegate was opened for writing
-	 * @return an encrypted file handle
-	 * @throws IOException if the header cannot be read or written, is unauthentic, or the ciphertext size is invalid
+	 * @param creationLock serialises writable opens of an empty ciphertext across all handles of a file system, so only one header is ever persisted
+	 * @param opener opens the ciphertext file on the delegate
+	 * @param writable whether the delegate is opened for writing
+	 * @param truncate whether the caller asked for {@code TRUNCATE_EXISTING}
+	 * @throws IOException if the ciphertext cannot be opened, or its header cannot be read or written, is unauthentic, or the ciphertext size is invalid
 	 */
-	public static UvfVfsFile open(VfsFile delegate, UnlockedVault vault, boolean writable) throws IOException {
-		var file = new UvfVfsFile(delegate, vault);
-		if (writable && file.ciphertextSize == 0) {
+	public UvfVfsFile(UnlockedVault vault, Lock creationLock, Opener opener, boolean writable, boolean truncate) throws IOException {
+		var opened = Opened.open(vault, opener);
+		this.vault = vault;
+		this.delegate = opened.delegate();
+		this.vaultFile = opened.vaultFile();
+		this.ciphertextSize = opened.ciphertextSize();
+		if (!writable) {
+			return;
+		}
+		try { // every field is set, so from here on close() releases everything
+			persistHeaderIfEmpty(creationLock);
+			if (truncate) {
+				truncate(0);
+			}
+		} catch (IOException | RuntimeException e) {
+			Closeables.suppressWhileClosing(this, e);
+			throw e;
+		}
+	}
+
+	// the resources a handle needs, acquired together: on failure nothing half-open escapes
+	private record Opened(VfsFile delegate, VaultFile vaultFile, long ciphertextSize) {
+
+		static Opened open(UnlockedVault vault, Opener opener) throws IOException {
+			var delegate = opener.open();
 			try {
-				file.writeUnsynced(ByteBuffer.allocate(0), 0); // persists the header and, depending on the layout, the EOF chunk
-			} catch (IOException e) {
-				file.vaultFile.close();
+				long ciphertextSize = delegate.readMetadata().size();
+				return new Opened(delegate, load(delegate, vault, ciphertextSize), ciphertextSize);
+			} catch (IOException | RuntimeException e) {
+				Closeables.suppressWhileClosing(delegate, e);
 				throw e;
 			}
 		}
-		return file;
+	}
+
+	// a writable handle on an empty ciphertext writes its header right away, so every later open shares it; the lock keeps two such handles from racing
+	private void persistHeaderIfEmpty(Lock creationLock) throws IOException {
+		if (ciphertextSize != 0) {
+			return;
+		}
+		creationLock.lock();
+		try {
+			if (sync().size() == 0) { // if another handle persisted its header while we waited, sync() has adopted it instead
+				writeUnsynced(ByteBuffer.allocate(0), 0); // persists the header and, depending on the layout, the EOF chunk
+			}
+		} finally {
+			creationLock.unlock();
+		}
 	}
 
 	// derives the vault file for a ciphertext of the given size, reading the header from the delegate unless the ciphertext is empty
@@ -205,7 +252,7 @@ public final class UvfVfsFile implements VfsFile {
 
 	@Override
 	public synchronized void close() throws IOException {
-		var file = vaultFile;
+		var file = vaultFile; // a local copy, as try-with-resources needs an effectively final variable
 		try (file) {
 			delegate.close();
 		}

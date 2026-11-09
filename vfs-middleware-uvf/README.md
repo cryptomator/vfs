@@ -29,7 +29,7 @@ Node types are decided here, not by cryptolib: a regular file is a plain `*.uvf`
 
 `UvfVfsFile` handles share no state with each other; the ciphertext on the delegate is the single source of truth, so handles in different processes behave the same as handles in this one.
 
-- A writable handle opened on an empty ciphertext writes the header immediately (`UvfFileSystem` serialises these opens with a lock, so only one header is ever written). An empty cleartext file is therefore a header-sized ciphertext, and every later open reads that header.
+- A writable handle opened on an empty ciphertext writes the header immediately (the `UvfVfsFile` constructor serialises these opens with a lock owned by `UvfFileSystem`, so only one header is ever written). An empty cleartext file is therefore a header-sized ciphertext, and every later open reads that header.
 - `TRUNCATE_EXISTING` is applied to the cleartext, not forwarded to the delegate, so the header survives and 0-byte ciphertexts are always files nobody has written to yet.
 - Before every write, truncate and metadata read a handle compares the ciphertext size with the one its `VaultFile` was derived from and re-reads header and size on a mismatch. That costs one `readMetadata` per call (a path-based stat on the NIO backend) and makes writes and truncations through other handles visible. Reads are optimistic: chunks are authenticated, so a stale size can only surface as a false end of file, a short chunk or a failed authentication, and only then is the size re-checked and the read retried once.
 - Not protected: two handles writing into the same chunk at the same time, where the second read-modify-write wins. Writers that overlap in time are expected to coordinate, as on any file system.
