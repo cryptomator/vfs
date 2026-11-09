@@ -69,8 +69,8 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		this.vault = vault;
 		this.reader = relPath -> readAll(delegate, "/" + relPath);
 		this.pathResolver = new DirectoryPathResolver(vault, reader);
-		// encrypted names are compared exactly; xattrs are not yet part of this middleware
-		this.capabilities = new VfsCapabilities(true, true, false, 0);
+		// ciphertext names are compared exactly, but cryptolib normalizes cleartext names to NFC before encrypting them, so every form of a name denotes the same node; xattrs are not yet part of this middleware
+		this.capabilities = new VfsCapabilities(true, false, true, false, 0);
 	}
 
 	/**

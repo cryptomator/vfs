@@ -395,8 +395,29 @@ class NioVfsFileSystemTest {
 		@Test
 		@DisplayName("an explicit setting wins")
 		void explicit() throws IOException {
-			assertTrue(new NioVfsFileSystem(root, true).capabilities().caseSensitive());
-			assertFalse(new NioVfsFileSystem(root, false).capabilities().caseSensitive());
+			assertTrue(new NioVfsFileSystem(root, true, true).capabilities().caseSensitive());
+			assertFalse(new NioVfsFileSystem(root, false, true).capabilities().caseSensitive());
+		}
+	}
+
+	@Nested
+	@DisplayName("normalization sensitivity")
+	class NormalizationSensitivity {
+
+		@Test
+		@DisplayName("is probed from the file store type holding the root")
+		void probed() throws IOException {
+			var type = Files.getFileStore(root).type().toLowerCase(java.util.Locale.ROOT);
+			var resolvesAllForms = type.equals("apfs") || type.startsWith("hfs");
+
+			assertEquals(!resolvesAllForms, fs.capabilities().normalizationSensitive());
+		}
+
+		@Test
+		@DisplayName("an explicit setting wins")
+		void explicit() throws IOException {
+			assertTrue(new NioVfsFileSystem(root, true, true).capabilities().normalizationSensitive());
+			assertFalse(new NioVfsFileSystem(root, true, false).capabilities().normalizationSensitive());
 		}
 	}
 

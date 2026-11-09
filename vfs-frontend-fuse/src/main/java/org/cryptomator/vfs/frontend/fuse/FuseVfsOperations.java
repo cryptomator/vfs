@@ -62,13 +62,13 @@ public final class FuseVfsOperations implements FuseOperations {
 	private final AtomicLong nextFileHandle = new AtomicLong(1L);
 
 	/**
-	 * Creates an adapter that reports all nodes as owned by the current process user and transcodes names for the current platform.
+	 * Creates an adapter that reports all nodes as owned by the current process user and transcodes names as the file system's capabilities and the current platform require.
 	 *
 	 * @param fileSystem the file system to expose
 	 * @param errno the platform's error codes
 	 */
 	public FuseVfsOperations(VfsFileSystem fileSystem, Errno errno) {
-		this(fileSystem, errno, currentUserId("uid"), currentUserId("gid"), FileNameTranscoder.forCurrentPlatform());
+		this(fileSystem, errno, currentUserId("uid"), currentUserId("gid"), FileNameTranscoder.forFileSystem(fileSystem.capabilities()));
 	}
 
 	/**

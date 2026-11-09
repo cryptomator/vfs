@@ -44,6 +44,7 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -69,23 +70,24 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 	private final ReadWriteLock renameLock = new ReentrantReadWriteLock(); // read: open and register a handle, write: move and re-point handles
 
 	/**
-	 * Mirrors the given directory, probing the volume for case sensitivity.
+	 * Mirrors the given directory, probing the volume for case and normalization sensitivity.
 	 *
 	 * @param root the directory to expose as {@code /}
 	 * @throws IOException if {@code root} is not a directory or its file store cannot be inspected
 	 */
 	public NioVfsFileSystem(Path root) throws IOException {
-		this(root, probeCaseSensitivity(root.toAbsolutePath().normalize()));
+		this(root, probeCaseSensitivity(root.toAbsolutePath().normalize()), probeNormalizationSensitivity(root));
 	}
 
 	/**
-	 * Mirrors the given directory with a known case sensitivity.
+	 * Mirrors the given directory with known case and normalization sensitivity.
 	 *
 	 * @param root the directory to expose as {@code /}
 	 * @param caseSensitive whether the volume holding {@code root} distinguishes names by case
+	 * @param normalizationSensitive whether the volume holding {@code root} distinguishes names that differ only in Unicode normalization form
 	 * @throws IOException if {@code root} is not a directory or its file store cannot be inspected
 	 */
-	public NioVfsFileSystem(Path root, boolean caseSensitive) throws IOException {
+	public NioVfsFileSystem(Path root, boolean caseSensitive, boolean normalizationSensitive) throws IOException {
 		if (!Files.isDirectory(root)) {
 			throw new NotDirectoryException(root.toString());
 		}
@@ -93,7 +95,7 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 		this.fileStore = Files.getFileStore(this.root);
 		this.posix = fileStore.supportsFileAttributeView(PosixFileAttributeView.class);
 		this.unix = fileStore.supportsFileAttributeView(UNIX_VIEW);
-		this.capabilities = new VfsCapabilities(caseSensitive, posix, fileStore.supportsFileAttributeView(USER_VIEW), VfsCapabilities.NO_LIMIT);
+		this.capabilities = new VfsCapabilities(caseSensitive, normalizationSensitive, posix, fileStore.supportsFileAttributeView(USER_VIEW), VfsCapabilities.NO_LIMIT);
 	}
 
 	// NIO cannot ask the file store, so this checks whether the root is still reachable with the case of its letters swapped; a root without cased letters is assumed case-sensitive
@@ -103,6 +105,12 @@ public final class NioVfsFileSystem implements VfsFileSystem {
 			return true;
 		}
 		return !Files.isSameFile(root, swapped);
+	}
+
+	// NIO cannot ask the file store either; APFS and HFS+ resolve every normalization form of a name to the same node, all other common file systems compare bytes
+	static boolean probeNormalizationSensitivity(Path root) throws IOException {
+		var type = Files.getFileStore(root).type().toLowerCase(Locale.ROOT);
+		return !(type.equals("apfs") || type.startsWith("hfs"));
 	}
 
 	private static String swapCase(String s) {
