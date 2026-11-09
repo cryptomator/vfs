@@ -52,7 +52,7 @@ public final class VfsTestMain {
 		var backend = new NioVfsFileSystem(vaultDir);
 		var ciphertextLoggingMiddleware = new LoggingVfsFileSystem("ciphertext", backend);
 		var password = readPassword();
-		var csprng = SecureRandom.getInstanceStrong();
+		var csprng = new SecureRandom(); // getInstanceStrong() may block on headless Linux, and the default is a CSPRNG as well
 		boolean createNewVault = Files.notExists(vaultDir.resolve(VAULT_CONFIG_FILE)) && Files.notExists(vaultDir.resolve(VAULT_DATA_DIR));
 
 		var builder = Fuse.builder();

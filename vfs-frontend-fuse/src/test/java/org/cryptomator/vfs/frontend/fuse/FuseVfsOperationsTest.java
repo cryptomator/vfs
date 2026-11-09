@@ -46,6 +46,7 @@ class FuseVfsOperationsTest {
 	private static final int EINVAL = 22;
 	private static final int ERANGE = 34;
 	private static final int ENOATTR = 93;
+	private static final int ENOTSUP = 95;
 
 	private VfsFileSystem fs;
 	private Errno errno;
@@ -60,6 +61,7 @@ class FuseVfsOperationsTest {
 		Mockito.doReturn(EINVAL).when(errno).einval();
 		Mockito.doReturn(ERANGE).when(errno).erange();
 		Mockito.doReturn(ENOATTR).when(errno).enoattr();
+		Mockito.doReturn(ENOTSUP).when(errno).enotsup();
 		Mockito.doReturn(VfsCapabilities.MINIMAL).when(fs).capabilities();
 		ops = new FuseVfsOperations(fs, errno);
 	}
@@ -421,6 +423,16 @@ class FuseVfsOperationsTest {
 			Mockito.doThrow(new NoSuchFileException("/f")).when(fs).getXattr("/f", "user.a");
 
 			assertEquals(-ENOATTR, ops.getxattr("/f", "user.a", ByteBuffer.allocate(0)));
+		}
+
+		@Test
+		@DisplayName("an unsupported attribute name maps to ENOTSUP")
+		void unsupportedName() throws IOException {
+			Mockito.doThrow(new UnsupportedOperationException("not in the user namespace")).when(fs).getXattr("/f", "security.selinux");
+			Mockito.doThrow(new UnsupportedOperationException("not in the user namespace")).when(fs).removeXattr("/f", "security.selinux");
+
+			assertEquals(-ENOTSUP, ops.getxattr("/f", "security.selinux", ByteBuffer.allocate(0)));
+			assertEquals(-ENOTSUP, ops.removexattr("/f", "security.selinux"));
 		}
 
 		@Test

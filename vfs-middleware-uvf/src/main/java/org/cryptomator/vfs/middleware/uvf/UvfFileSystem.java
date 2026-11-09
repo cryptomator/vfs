@@ -396,7 +396,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		long size = switch (type) {
 			case FILE -> cleartextSize(resolved, entryMetadata.size());
 			case DIRECTORY -> entryMetadata.size();
-			case SYMBOLIC_LINK -> symlinkTarget(resolved).getBytes(StandardCharsets.UTF_8).length;
+			case SYMBOLIC_LINK -> symlinkTargetLength(resolved);
 		};
 		return new VfsNodeMetadata(
 				type,
@@ -431,11 +431,21 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		}
 	}
 
+	// a damaged link must not take the whole directory listing down with it either, so it is reported as empty; reading it still fails
+	private long symlinkTargetLength(ResolvedPath resolved) {
+		try {
+			return symlinkTarget(resolved).getBytes(StandardCharsets.UTF_8).length;
+		} catch (IOException e) { // unauthentic, malformed or oversized symlink.uvf
+			LOG.warn("Reporting symbolic link {} as empty, its target cannot be read: {}", resolved.symlinkFilePath(), e.getMessage());
+			return 0;
+		}
+	}
+
 	private String symlinkTarget(ResolvedPath resolved) throws IOException {
 		try {
 			return resolved.node().symlinkTarget(reader);
-		} catch (AuthenticationFailedException e) {
-			throw new IOException("Unauthentic symbolic link", e);
+		} catch (AuthenticationFailedException | IllegalArgumentException e) { // unauthentic or malformed symlink.uvf
+			throw new IOException("Invalid symbolic link", e);
 		}
 	}
 

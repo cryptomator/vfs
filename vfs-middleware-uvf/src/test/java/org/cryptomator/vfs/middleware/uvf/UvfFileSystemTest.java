@@ -493,6 +493,22 @@ class UvfFileSystemTest {
 		}
 
 		@Test
+		@DisplayName("a damaged link is listed as empty, reading it fails")
+		void damagedLink() throws IOException {
+			fs.createSymbolicLink("/link", "../target");
+			var symlinkFile = ciphertext.paths().stream().filter(p -> p.endsWith("/symlink.uvf")).findFirst().orElseThrow();
+			var garbage = new byte[128]; // long enough to be parsed, so it fails authentication rather than length validation
+			csprng.nextBytes(garbage);
+			ciphertext.writeFile(symlinkFile, garbage);
+
+			var entry = list("/").get("link");
+
+			assertEquals(VfsNodeType.SYMBOLIC_LINK, entry.metadata().type());
+			assertEquals(0, entry.metadata().size());
+			assertThrows(IOException.class, () -> fs.readSymbolicLink("/link"));
+		}
+
+		@Test
 		@DisplayName("readSymbolicLink on a file fails")
 		void notALink() throws IOException {
 			writeFile("/f", "x");

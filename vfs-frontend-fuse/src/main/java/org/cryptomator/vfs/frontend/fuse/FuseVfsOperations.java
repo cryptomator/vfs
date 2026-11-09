@@ -434,6 +434,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return size;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
@@ -448,6 +450,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return 0;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
@@ -471,6 +475,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return size;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
@@ -481,6 +487,8 @@ public final class FuseVfsOperations implements FuseOperations {
 			return 0;
 		} catch (IOException e) {
 			return toXattrErrno(e);
+		} catch (UnsupportedOperationException _) {
+			return -errno.enotsup(); // e.g. a name outside the user. namespace on Linux
 		}
 	}
 
