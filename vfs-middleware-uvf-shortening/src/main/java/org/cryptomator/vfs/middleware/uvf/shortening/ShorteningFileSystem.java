@@ -87,8 +87,8 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		this.delegate = delegate;
 		this.shortener = NameShortener.uvf(threshold); // UVF only: CVF8 shortening changes the node type, which a per-component mapping cannot do
 		this.resolveConflicts = resolveConflicts;
-		// a long name is stored under the hash of its exact UTF-8 bytes, so names differing only in case or normalization never alias, whatever the delegate does;
-		// reporting the delegate's insensitivity would let frontends rewrite names and miss long-named nodes, so the strict variant is reported
+		// a long name is stored under the hash of its exact UTF-8 bytes, so names differing only in case or normalization never alias, whatever the delegate does.
+		// Reporting the delegate's insensitivity would let frontends rewrite names and miss long-named nodes, so the strict variant is reported
 		var delegateCapabilities = delegate.capabilities();
 		this.capabilities = new VfsCapabilities(true, true, delegateCapabilities.supportsSymbolicLinks(), delegateCapabilities.supportsXattrs(), delegateCapabilities.maxXattrValueSize());
 	}
@@ -382,7 +382,7 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		}
 		try {
 			writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), shortened.sidecarContents());
-		} catch (FileAlreadyExistsException e) {
+		} catch (FileAlreadyExistsException _) {
 			if (readSidecar(node.parentPath(), shortened.shortenedName()) == null) {
 				writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING), shortened.sidecarContents());
 			}
