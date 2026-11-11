@@ -53,7 +53,7 @@ public final class VfsTestMain {
 		var backend = new NioVfsFileSystem(vaultDir);
 		var ciphertextLoggingMiddleware = new LoggingVfsFileSystem("ciphertext", backend);
 		// the vault config cannot carry nameShorteningThreshold yet (cryptolib does not expose it), so the recommended value is fixed here
-		var shorteningMiddleware = new ShorteningFileSystem(ciphertextLoggingMiddleware, ShorteningFileSystem.RECOMMENDED_THRESHOLD);
+		var shorteningMiddleware = new ShorteningFileSystem(ciphertextLoggingMiddleware, ShorteningFileSystem.RECOMMENDED_THRESHOLD, true);
 		var password = readPassword();
 		var csprng = new SecureRandom(); // getInstanceStrong() may block on headless Linux, and the default is a CSPRNG as well
 		boolean createNewVault = Files.notExists(vaultDir.resolve(VAULT_CONFIG_FILE)) && Files.notExists(vaultDir.resolve(VAULT_DATA_DIR));

@@ -1,5 +1,8 @@
 package org.cryptomator.vfs.middleware.shortening;
 
+import org.cryptomator.cryptolib.api.AuthenticationFailedException;
+import org.cryptomator.cryptolib.api.NameShortener;
+import org.cryptomator.cryptolib.api.ShortenedVaultNode;
 import org.cryptomator.vfs.api.VfsCapabilities;
 import org.cryptomator.vfs.api.VfsDirectoryEntry;
 import org.cryptomator.vfs.api.VfsDirectoryStream;
@@ -16,34 +19,33 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.function.Predicate;
 
 /**
  * A {@link VfsFileSystem} decorator that stores names longer than a threshold under a short, hash-derived name next to a sidecar file holding the original name.
  * <p>
- * The middleware involves no cryptography and operates on the names of the upper layer without understanding them.
+ * The middleware involves no keys and operates on the names of the upper layer without understanding them. The name format is the one of the Unified Vault Format, provided by
+ * cryptolib's {@link NameShortener#uvf(int)}; this class performs the I/O.
  *
  * @see <a href="https://github.com/encryption-alliance/unified-vault-format/tree/develop/file-name-shortening">UVF File Name Shortening</a>
+ * @see <a href="https://github.com/cryptomator/vfs/blob/develop/docs/conflict-resolution.md">Sync conflict resolution</a>
  */
 public final class ShorteningFileSystem implements VfsFileSystem {
-
-	/**
-	 * The smallest permitted threshold, which is the length of a stored short name.
-	 */
-	public static final int MIN_THRESHOLD = NameShortener.HASH_LENGTH + NameShortener.NODE_SUFFIX.length();
 
 	/**
 	 * The recommended threshold, leaving headroom for suffixes added by sync services in case of conflicts.
@@ -61,30 +63,30 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 
 	private final VfsFileSystem delegate;
 	private final NameShortener shortener;
+	private final boolean resolveConflicts;
 	private final VfsCapabilities capabilities;
-	// verified sidecar contents by hash; the hash determines the content, so entries never become wrong
+	// verified full names by shortened name; the hash in the shortened name determines the sidecar's content, so entries never become wrong
 	private final Map<String, String> sidecarCache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
 		@Override
 		protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
 			return size() > SIDECAR_CACHE_SIZE;
 		}
 	});
-	// stored path of the parent joined with a reported conflict name -> stored path of the conflicting node, learned while listing directories
-	private final ConcurrentMap<String, String> conflicts = new ConcurrentHashMap<>();
 
 	/**
 	 * Creates a shortening layer on top of the given delegate.
 	 *
 	 * @param delegate the underlying file system storing the shortened names
-	 * @param threshold names longer than this many UTF-8 bytes get shortened, e.g. {@code nameShorteningThreshold} from {@code vault.uvf}
-	 * @throws IllegalArgumentException if {@code threshold} is less than {@link #MIN_THRESHOLD}
+	 * @param threshold names longer than this many UTF-8 bytes get shortened: {@code nameShorteningThreshold} from {@code vault.uvf}, i.e. at least {@link NameShortener#MIN_UVF_THRESHOLD},
+	 * or {@link NameShortener#DISABLED} to pass all names through unchanged
+	 * @param resolveConflicts whether listings repair conflicting copies created by sync services, writing to the delegate; if {@code false}, conflicting copies of shortened nodes are
+	 * not listed
+	 * @throws IllegalArgumentException if {@code threshold} is invalid
 	 */
-	public ShorteningFileSystem(VfsFileSystem delegate, int threshold) {
-		if (threshold < MIN_THRESHOLD) {
-			throw new IllegalArgumentException("Threshold must be at least " + MIN_THRESHOLD + ", was " + threshold);
-		}
+	public ShorteningFileSystem(VfsFileSystem delegate, int threshold, boolean resolveConflicts) {
 		this.delegate = delegate;
-		this.shortener = new NameShortener(threshold);
+		this.shortener = NameShortener.uvf(threshold); // UVF only: CVF8 shortening changes the node type, which a per-component mapping cannot do
+		this.resolveConflicts = resolveConflicts;
 		// a long name is stored under the hash of its exact UTF-8 bytes, so names differing only in case or normalization never alias, whatever the delegate does;
 		// reporting the delegate's insensitivity would let frontends rewrite names and miss long-named nodes, so the strict variant is reported
 		var delegateCapabilities = delegate.capabilities();
@@ -115,42 +117,132 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 	@Override
 	public VfsDirectoryStream openDirectory(String path) throws IOException {
 		var storedDir = storedPath(path);
-		return new MappingDirectoryStream(delegate, storedDir, entry -> toUpperEntry(storedDir, entry));
+		var createdNodes = new HashSet<String>(); // nodes renamed into place by conflict resolution during this listing, which the delegate's listing may or may not show again
+		return new MappingDirectoryStream(delegate, storedDir, entry -> createdNodes.contains(entry.name()) ? null : toUpperEntry(storedDir, entry, createdNodes));
 	}
 
 	// null for sidecars and for entries that cannot be mapped back to a valid name
-	private @Nullable VfsDirectoryEntry toUpperEntry(String storedDir, VfsDirectoryEntry storedEntry) {
+	private @Nullable VfsDirectoryEntry toUpperEntry(String storedDir, VfsDirectoryEntry storedEntry, Set<String> createdNodes) {
 		var storedName = storedEntry.name();
-		if (NameShortener.SIDECAR.matcher(storedName).matches()) {
+		// conflicting copies of sidecars are interchangeable or invalid, so they are hidden as well; valid ones are only used to restore a broken sidecar
+		if (shortener.isSidecar(storedName) || ConflictName.parse(storedName, shortener::isSidecar) != null) {
 			return null;
 		}
-		var matcher = NameShortener.SHORTENED_NODE.matcher(storedName);
-		if (matcher.matches()) {
-			var hash = matcher.group(1);
-			var conflictSuffix = matcher.group(2);
-			String name;
-			try {
-				name = readSidecar(storedDir, hash);
-			} catch (IOException e) {
-				throw new UncheckedIOException(e);
+		try {
+			if (shortener.isShortened(storedName)) {
+				var name = verifiedName(storedDir, storedName);
+				return name == null ? null : new VfsDirectoryEntry(name, storedEntry.metadata());
 			}
-			if (name == null) {
-				LOG.warn("Skipping {}, its sidecar is missing or invalid", join(storedDir, storedName));
-				return null;
+			var conflict = ConflictName.parse(storedName, shortener::isShortened);
+			if (conflict != null) {
+				var name = resolveConflictingNode(storedDir, storedName, conflict, createdNodes);
+				return name == null ? null : new VfsDirectoryEntry(name, storedEntry.metadata());
 			}
-			if (conflictSuffix.isEmpty()) {
-				return new VfsDirectoryEntry(name, storedEntry.metadata());
-			}
-			var conflictName = NameShortener.conflictName(name, conflictSuffix);
-			conflicts.put(join(storedDir, conflictName), join(storedDir, storedName));
-			return new VfsDirectoryEntry(conflictName, storedEntry.metadata());
+		} catch (IOException e) {
+			throw new UncheckedIOException(e);
 		}
-		if (shortener.isLong(storedName)) {
-			LOG.warn("Skipping {}, its name exceeds the shortening threshold", join(storedDir, storedName));
+		if (!isCanonical(storedName)) {
+			LOG.warn("Skipping {}, its name is reserved or exceeds the shortening threshold", join(storedDir, storedName));
 			return null;
 		}
 		return storedEntry;
 	}
+
+	// every name has exactly one stored representation: a name that would have been shortened, or that is reserved, is invalid when found as is
+	private boolean isCanonical(String storedName) {
+		try {
+			return shortener.shorten(storedName) == null;
+		} catch (IllegalArgumentException _) {
+			return false;
+		}
+	}
+
+	// the full name of a shortened node, restoring its sidecar from a conflicting copy if necessary; null if the node cannot be mapped back
+	private @Nullable String verifiedName(String storedDir, String shortenedName) throws IOException {
+		var name = readSidecar(storedDir, shortenedName);
+		if (name == null && resolveConflicts) {
+			name = restoreSidecar(storedDir, shortenedName);
+		}
+		if (name == null) {
+			LOG.warn("Skipping {}, its sidecar is missing or invalid", join(storedDir, shortenedName));
+		}
+		return name;
+	}
+
+	// --- conflict resolution ---
+
+	/*
+	 * Turns a conflicting copy "H.shortened (x).uvf" of a node with full name N into a regular shortened node: its full name N' is N with the conflict suffix inserted, so the upper
+	 * layer sees an ordinary conflicting copy and resolves it with its own knowledge. The sidecar of N' is written first, then the copy is moved atomically; H.original.uvf is left
+	 * alone, as it still belongs to H.shortened.uvf.
+	 */
+	private @Nullable String resolveConflictingNode(String storedDir, String storedName, ConflictName conflict, Set<String> createdNodes) throws IOException {
+		var copyPath = join(storedDir, storedName);
+		if (!resolveConflicts) {
+			LOG.info("Skipping conflicting copy {}, conflict resolution is disabled", copyPath);
+			return null;
+		}
+		var originalName = verifiedName(storedDir, conflict.canonicalName());
+		if (originalName == null) {
+			return null;
+		}
+		var name = conflict.applyTo(originalName);
+		if (name.getBytes(StandardCharsets.UTF_8).length > MAX_NAME_LENGTH) {
+			LOG.warn("Skipping conflicting copy {}, its name would exceed {} bytes", copyPath, MAX_NAME_LENGTH);
+			return null;
+		}
+		var node = new StoredNode(storedDir, name, shortener.shorten(name)); // longer than the original name, hence always shortened
+		try {
+			writeSidecar(node);
+			delegate.rename(copyPath, node.path(), false);
+		} catch (FileAlreadyExistsException _) {
+			LOG.warn("Skipping conflicting copy {}, its resolved name is taken by {}", copyPath, node.path());
+			return null;
+		} catch (IOException | UnsupportedOperationException e) { // e.g. read-only storage
+			LOG.warn("Skipping conflicting copy {}, it cannot be resolved: {}", copyPath, e.getMessage());
+			return null;
+		}
+		LOG.info("Resolved conflicting copy {} as {}", copyPath, node.path());
+		createdNodes.add(node.storedName());
+		return name;
+	}
+
+	// replaces a missing or invalid sidecar by a valid conflicting copy of it, returning the full name, or null if there is none
+	private @Nullable String restoreSidecar(String storedDir, String shortenedName) throws IOException {
+		var sidecarName = shortener.sidecarFile(shortenedName);
+		for (var copyName : conflictingCopies(storedDir, sidecarName::equals)) {
+			var copyPath = join(storedDir, copyName);
+			var name = verify(shortenedName, readAtMost(copyPath, MAX_NAME_LENGTH + 1));
+			if (name != null) {
+				try {
+					delegate.rename(copyPath, join(storedDir, sidecarName), true);
+					LOG.info("Restored sidecar {} from conflicting copy {}", join(storedDir, sidecarName), copyPath);
+				} catch (IOException | UnsupportedOperationException e) { // e.g. read-only storage; the name is still known for this listing
+					LOG.warn("Failed to restore sidecar {} from conflicting copy {}: {}", join(storedDir, sidecarName), copyPath, e.getMessage());
+				}
+				sidecarCache.put(shortenedName, name);
+				return name;
+			}
+		}
+		return null;
+	}
+
+	// names of the entries in a stored directory that are conflicting copies of a name accepted by isCanonical
+	private List<String> conflictingCopies(String storedDir, Predicate<String> isCanonical) throws IOException {
+		try (var entries = delegate.openDirectory(storedDir)) {
+			var copies = new ArrayList<String>();
+			for (var entry : entries) {
+				if (ConflictName.parse(entry.name(), isCanonical) != null) {
+					copies.add(entry.name());
+				}
+			}
+			return copies;
+		} catch (UncheckedIOException e) {
+			throw e.getCause();
+		}
+	}
+
+	// --- node operations ---
 
 	@Override
 	public void createDirectory(String path, Set<PosixFilePermission> permissions) throws IOException {
@@ -163,7 +255,6 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 	public void deleteDirectory(String path) throws IOException {
 		var node = resolve(path);
 		delegate.deleteDirectory(node.path());
-		forgetConflicts(node);
 		deleteSidecar(node);
 	}
 
@@ -188,7 +279,6 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 	public void deleteFile(String path) throws IOException {
 		var node = resolve(path);
 		delegate.deleteFile(node.path());
-		forgetConflicts(node);
 		deleteSidecar(node);
 	}
 
@@ -198,8 +288,7 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		var target = resolve(targetPath);
 		writeSidecar(target);
 		delegate.rename(source.path(), target.path(), replaceExisting); // the node moves atomically
-		forgetConflicts(source);
-		boolean sharesSidecar = source.shortened() && target.shortened() && source.sidecarPath().equals(target.sidecarPath());
+		boolean sharesSidecar = source.shortened() != null && target.shortened() != null && source.sidecarPath().equals(target.sidecarPath());
 		if (!sharesSidecar) {
 			deleteSidecar(source);
 		}
@@ -253,7 +342,7 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		var storedPath = "/";
 		for (var name : path.split("/")) {
 			if (!name.isEmpty()) {
-				storedPath = join(storedPath, storedName(path, storedPath, name));
+				storedPath = join(storedPath, storedNode(path, storedPath, name).storedName());
 			}
 		}
 		return storedPath;
@@ -265,58 +354,45 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		if (name.isEmpty()) {
 			throw new FileSystemException(path, null, "Not a valid node path");
 		}
-		var storedParent = storedPath(path.substring(0, separator));
-		return new StoredNode(storedParent, name, storedName(path, storedParent, name));
+		return storedNode(path, storedPath(path.substring(0, separator)), name);
 	}
 
-	private String storedName(String path, String storedParent, String name) throws IOException {
-		var conflictingNode = conflicts.get(join(storedParent, name));
-		if (conflictingNode != null) {
-			return conflictingNode.substring(conflictingNode.lastIndexOf('/') + 1);
-		}
-		var utf8Name = NameShortener.utf8(name);
-		if (utf8Name.length > MAX_NAME_LENGTH) {
+	private StoredNode storedNode(String path, String storedParent, String name) throws IOException {
+		if (name.getBytes(StandardCharsets.UTF_8).length > MAX_NAME_LENGTH) {
 			throw new FileSystemException(path, null, "File name too long");
 		}
-		if (shortener.isLong(utf8Name)) {
-			return shortener.shortName(utf8Name) + NameShortener.NODE_SUFFIX;
-		}
-		if (NameShortener.isReserved(name)) {
+		try {
+			return new StoredNode(storedParent, name, shortener.shorten(name));
+		} catch (IllegalArgumentException _) {
 			throw new FileSystemException(path, null, "Reserved file name");
 		}
-		return name;
 	}
 
 	private static String join(String parent, String name) {
 		return "/".equals(parent) ? "/" + name : parent + "/" + name;
 	}
 
-	// a reported conflict name is only valid as long as the node it was learned from exists in place
-	private void forgetConflicts(StoredNode node) {
-		conflicts.remove(join(node.parentPath(), node.name()));
-		var descendants = node.path() + "/";
-		conflicts.keySet().removeIf(key -> key.startsWith(descendants));
-	}
-
 	// --- sidecar I/O ---
 
 	// written before the node; an existing sidecar is left alone unless it is invalid, so an interruption never damages another node's sidecar
 	private void writeSidecar(StoredNode node) throws IOException {
-		if (!node.shortened()) {
+		var shortened = node.shortened();
+		if (shortened == null) {
 			return;
 		}
 		try {
-			writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), NameShortener.utf8(node.name()));
+			writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), shortened.sidecarContents());
 		} catch (FileAlreadyExistsException e) {
-			if (readSidecar(node.parentPath(), node.hash()) == null) {
-				writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING), NameShortener.utf8(node.name()));
+			if (readSidecar(node.parentPath(), shortened.shortenedName()) == null) {
+				writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING), shortened.sidecarContents());
 			}
 		}
 	}
 
-	// deleted after the node; an orphaned sidecar is harmless, whereas deleting one that is still referenced by another node is not
+	// deleted after the node; an orphaned sidecar is harmless, whereas deleting one that a conflicting copy of the node still needs is not
 	private void deleteSidecar(StoredNode node) throws IOException {
-		if (!node.shortened() || node.conflicting() || isReferencedByConflictingNode(node)) {
+		var shortened = node.shortened();
+		if (shortened == null || !conflictingCopies(node.parentPath(), shortened.shortenedName()::equals).isEmpty()) {
 			return;
 		}
 		try {
@@ -326,29 +402,35 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		}
 	}
 
-	private boolean isReferencedByConflictingNode(StoredNode node) {
-		var nodePrefix = join(node.parentPath(), node.hash() + ".shortened");
-		var nodePath = node.path();
-		return conflicts.values().stream().anyMatch(conflictingNode -> conflictingNode.startsWith(nodePrefix) && !conflictingNode.equals(nodePath));
-	}
-
-	// the verified original name, or null if the sidecar is missing or invalid
-	private @Nullable String readSidecar(String storedDir, String hash) throws IOException {
-		var cached = sidecarCache.get(hash);
+	// the verified full name, or null if the sidecar is missing or invalid
+	private @Nullable String readSidecar(String storedDir, String shortenedName) throws IOException {
+		var cached = sidecarCache.get(shortenedName);
 		if (cached != null) {
 			return cached;
 		}
 		byte[] contents;
 		try {
-			contents = readAtMost(join(storedDir, hash + NameShortener.SIDECAR_SUFFIX), MAX_NAME_LENGTH + 1);
+			contents = readAtMost(join(storedDir, shortener.sidecarFile(shortenedName)), MAX_NAME_LENGTH + 1);
 		} catch (NoSuchFileException _) {
 			return null;
 		}
-		var name = contents.length > MAX_NAME_LENGTH ? null : shortener.verifySidecar(hash, contents);
+		var name = verify(shortenedName, contents);
 		if (name != null) {
-			sidecarCache.put(hash, name);
+			sidecarCache.put(shortenedName, name);
 		}
 		return name;
+	}
+
+	private @Nullable String verify(String shortenedName, byte[] sidecarContents) {
+		if (sidecarContents.length > MAX_NAME_LENGTH) {
+			return null;
+		}
+		try {
+			return shortener.unshorten(shortenedName, sidecarContents);
+		} catch (AuthenticationFailedException e) {
+			LOG.debug("Invalid sidecar contents for {}: {}", shortenedName, e.getMessage());
+			return null;
+		}
 	}
 
 	private byte[] readAtMost(String storedPath, int maxBytes) throws IOException {
@@ -370,28 +452,22 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		}
 	}
 
-	// a node as stored on the delegate; storedName differs from name for long names and for conflicting copies
-	private record StoredNode(String parentPath, String name, String storedName) {
+	// a node as stored on the delegate; shortened is null if the name is stored as is
+	private record StoredNode(String parentPath, String name, @Nullable ShortenedVaultNode shortened) {
+
+		String storedName() {
+			return shortened == null ? name : shortened.shortenedName();
+		}
 
 		String path() {
-			return join(parentPath, storedName);
-		}
-
-		boolean shortened() {
-			return !name.equals(storedName);
-		}
-
-		// a conflicting copy shares its sidecar with the regular node of the same hash
-		boolean conflicting() {
-			return shortened() && !storedName.equals(hash() + NameShortener.NODE_SUFFIX);
-		}
-
-		String hash() {
-			return storedName.substring(0, NameShortener.HASH_LENGTH);
+			return join(parentPath, storedName());
 		}
 
 		String sidecarPath() {
-			return join(parentPath, hash() + NameShortener.SIDECAR_SUFFIX);
+			if (shortened == null) {
+				throw new IllegalStateException("Not shortened: " + path());
+			}
+			return join(parentPath, shortened.sidecarFile());
 		}
 	}
 }

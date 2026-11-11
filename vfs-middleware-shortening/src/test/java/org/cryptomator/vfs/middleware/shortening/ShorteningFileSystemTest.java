@@ -1,5 +1,6 @@
 package org.cryptomator.vfs.middleware.shortening;
 
+import org.cryptomator.cryptolib.api.NameShortener;
 import org.cryptomator.vfs.api.VfsDirectoryEntry;
 import org.cryptomator.vfs.api.VfsNodeType;
 import org.cryptomator.vfs.backend.nio.NioVfsFileSystem;
@@ -22,6 +23,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -33,13 +35,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ShorteningFileSystemTest {
 
 	private static final int THRESHOLD = ShorteningFileSystem.RECOMMENDED_THRESHOLD;
-	private static final String LONG_NAME = NameShortenerTest.SPEC_NAME;
-	private static final String LONG_HASH = NameShortenerTest.SPEC_HASH;
+	// the example from the spec: a 228 byte ciphertext name and its truncated, Base32-encoded SHA-256
+	private static final String LONG_NAME = "cAp6_KasM-0d74bYyP1eOpweCA4NGgwjVfDGc6heAlXbLIVq2tMWskWpw-DGgyoC63Tjjs3weXCL3hjGfQlP_uJDocVs7kxvIKDEsnHk2GYEnbLGJgCsYcIahvxW9PLxkIXowBkEcaedqWWZNmW0Cv0e9-EaPHmiveg-uvH7Hdp0vxEbxqxRioJBDN1jmVVfV-rE8fCa6ijyBJXYem0IvMLYl4wNgi0G.uvf";
+	private static final String LONG_HASH = "WQ6QCEQX5BTXEPNQZNJLHDN52MADIVA4";
 	private static final String LONG_NODE = LONG_HASH + ".shortened.uvf";
 	private static final String LONG_SIDECAR = LONG_HASH + ".original.uvf";
 	private static final String OTHER_LONG_NAME = "b".repeat(THRESHOLD) + ".uvf";
 
-	private final NameShortener shortener = new NameShortener(THRESHOLD);
+	private final NameShortener shortener = NameShortener.uvf(THRESHOLD);
 
 	@TempDir
 	Path root;
@@ -47,15 +50,15 @@ class ShorteningFileSystemTest {
 
 	@BeforeEach
 	void setup() throws IOException {
-		fs = new ShorteningFileSystem(new NioVfsFileSystem(root), THRESHOLD);
+		fs = new ShorteningFileSystem(new NioVfsFileSystem(root), THRESHOLD, true);
 	}
 
 	private String storedNode(String name) {
-		return shortener.shortName(name) + ".shortened.uvf";
+		return Objects.requireNonNull(shortener.shorten(name)).shortenedName();
 	}
 
 	private String storedSidecar(String name) {
-		return shortener.shortName(name) + ".original.uvf";
+		return Objects.requireNonNull(shortener.shorten(name)).sidecarFile();
 	}
 
 	private static List<String> sorted(String... names) {
@@ -94,10 +97,28 @@ class ShorteningFileSystemTest {
 
 	@ParameterizedTest
 	@DisplayName("constructor rejects thresholds below the length of a stored short name")
-	@ValueSource(ints = {-1, 0, 45})
+	@ValueSource(ints = {-2, 0, 45})
 	void testInvalidThreshold(int threshold) throws IOException {
 		var delegate = new NioVfsFileSystem(root);
-		assertThrows(IllegalArgumentException.class, () -> new ShorteningFileSystem(delegate, threshold));
+		assertThrows(IllegalArgumentException.class, () -> new ShorteningFileSystem(delegate, threshold, true));
+	}
+
+	@Test
+	@DisplayName("a disabled threshold passes all names through unchanged")
+	void testDisabled() throws IOException {
+		var passThrough = new ShorteningFileSystem(new NioVfsFileSystem(root), NameShortener.DISABLED, true);
+		Files.writeString(root.resolve(LONG_NODE), "x"); // no special meaning without shortening
+
+		try (var file = passThrough.createFile("/" + LONG_NAME, Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), Set.of())) {
+			file.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)), 0);
+		}
+
+		assertEquals(sorted(LONG_NAME, LONG_NODE), storedNames(root));
+		try (var entries = passThrough.openDirectory("/")) {
+			var names = new ArrayList<String>();
+			entries.forEach(entry -> names.add(entry.name()));
+			assertEquals(sorted(LONG_NAME, LONG_NODE), names.stream().sorted().toList());
+		}
 	}
 
 	@Test
@@ -325,6 +346,14 @@ class ShorteningFileSystemTest {
 
 			assertEquals(List.of(), list("/"));
 		}
+
+		@Test
+		@DisplayName("a stored short name that is reserved is skipped")
+		void testReservedStoredName() throws IOException {
+			Files.writeString(root.resolve("foo.shortened.uvf"), "x");
+
+			assertEquals(List.of(), list("/"));
+		}
 	}
 
 	@Nested
@@ -333,6 +362,7 @@ class ShorteningFileSystemTest {
 
 		private static final String CONFLICT_NODE = LONG_HASH + ".shortened (conflicted copy).uvf";
 		private static final String CONFLICT_NAME = LONG_NAME.substring(0, LONG_NAME.length() - 4) + " (conflicted copy).uvf";
+		private static final String SIDECAR_COPY = LONG_HASH + ".original (conflicted copy).uvf";
 
 		@BeforeEach
 		void setup() throws IOException {
@@ -341,44 +371,99 @@ class ShorteningFileSystemTest {
 		}
 
 		@Test
-		@DisplayName("a conflicting copy is reported with the suffix inserted before the extension")
-		void testListConflict() throws IOException {
+		@DisplayName("listing turns a conflicting copy into a regular shortened node named like an ordinary conflicting copy")
+		void testResolveConflictingNode() throws IOException {
 			assertEquals(sorted(CONFLICT_NAME, LONG_NAME), list("/"));
-			assertEquals("conflict", readFile("/" + CONFLICT_NAME));
+
+			assertEquals(sorted(LONG_SIDECAR, LONG_NODE, storedSidecar(CONFLICT_NAME), storedNode(CONFLICT_NAME)), storedNames(root));
+			assertEquals(CONFLICT_NAME, Files.readString(root.resolve(storedSidecar(CONFLICT_NAME))));
+			assertEquals("conflict", Files.readString(root.resolve(storedNode(CONFLICT_NAME))));
+			assertEquals("original", readFile("/" + LONG_NAME));
 		}
 
 		@Test
-		@DisplayName("renaming a conflicting copy converts it into regular shortened form and keeps the shared sidecar")
-		void testResolveConflict() throws IOException {
+		@DisplayName("a resolved copy is addressable by its new name without any state, e.g. by a fresh instance")
+		void testResolvedCopyIsStateless() throws IOException {
 			list("/");
+			var fresh = new ShorteningFileSystem(new NioVfsFileSystem(root), THRESHOLD, true);
 
-			fs.rename("/" + CONFLICT_NAME, "/" + OTHER_LONG_NAME, false);
+			fresh.rename("/" + CONFLICT_NAME, "/" + OTHER_LONG_NAME, false);
 
 			assertEquals(sorted(LONG_SIDECAR, LONG_NODE, storedSidecar(OTHER_LONG_NAME), storedNode(OTHER_LONG_NAME)), storedNames(root));
 			assertEquals(sorted(LONG_NAME, OTHER_LONG_NAME), list("/"));
-			assertEquals("conflict", readFile("/" + OTHER_LONG_NAME));
-			assertThrows(NoSuchFileException.class, () -> fs.readNodeMetadata("/" + CONFLICT_NAME));
 		}
 
 		@Test
-		@DisplayName("deleting the regular node keeps the sidecar while a conflicting copy is known")
-		void testDeleteRegularNodeKeepsSidecarOfConflict() throws IOException {
-			list("/");
-
-			fs.deleteFile("/" + LONG_NAME);
-
-			assertEquals(List.of(CONFLICT_NAME), list("/"));
-		}
-
-		@Test
-		@DisplayName("deleting a conflicting copy keeps the sidecar of the regular node")
-		void testDeleteConflict() throws IOException {
+		@DisplayName("deleting the resolved copy keeps the sidecar of the original")
+		void testDeleteResolvedCopy() throws IOException {
 			list("/");
 
 			fs.deleteFile("/" + CONFLICT_NAME);
 
-			assertEquals(List.of(LONG_SIDECAR, LONG_NODE), storedNames(root));
-			assertFalse(list("/").contains(CONFLICT_NAME));
+			assertEquals(sorted(LONG_SIDECAR, LONG_NODE), storedNames(root));
+			assertEquals(List.of(LONG_NAME), list("/"));
+		}
+
+		@Test
+		@DisplayName("deleting the original keeps its sidecar while an unresolved conflicting copy still needs it")
+		void testDeleteOriginalKeepsSharedSidecar() throws IOException {
+			fs.deleteFile("/" + LONG_NAME);
+
+			assertEquals(sorted(LONG_SIDECAR, CONFLICT_NODE), storedNames(root));
+			assertEquals(List.of(CONFLICT_NAME), list("/"));
+		}
+
+		@Test
+		@DisplayName("a missing sidecar is restored from a valid conflicting copy of it")
+		void testRestoreSidecarFromCopy() throws IOException {
+			Files.move(root.resolve(LONG_SIDECAR), root.resolve(SIDECAR_COPY));
+
+			assertEquals(sorted(CONFLICT_NAME, LONG_NAME), list("/"));
+			assertEquals(LONG_NAME, Files.readString(root.resolve(LONG_SIDECAR)));
+			assertFalse(Files.exists(root.resolve(SIDECAR_COPY)));
+		}
+
+		@Test
+		@DisplayName("an invalid sidecar is replaced by a valid conflicting copy of it")
+		void testReplaceInvalidSidecarByCopy() throws IOException {
+			Files.writeString(root.resolve(SIDECAR_COPY), LONG_NAME);
+			Files.writeString(root.resolve(LONG_SIDECAR), "garbage");
+
+			assertEquals(sorted(CONFLICT_NAME, LONG_NAME), list("/"));
+			assertEquals(LONG_NAME, Files.readString(root.resolve(LONG_SIDECAR)));
+		}
+
+		@Test
+		@DisplayName("nodes are skipped and nothing is deleted if neither the sidecar nor any copy of it is valid")
+		void testNoValidSidecar() throws IOException {
+			Files.writeString(root.resolve(LONG_SIDECAR), "garbage");
+			Files.writeString(root.resolve(SIDECAR_COPY), OTHER_LONG_NAME);
+
+			assertEquals(List.of(), list("/"));
+			assertEquals(sorted(LONG_SIDECAR, SIDECAR_COPY, LONG_NODE, CONFLICT_NODE), storedNames(root));
+		}
+
+		@Test
+		@DisplayName("a conflicting copy is skipped if its resolved name is taken")
+		void testResolvedNameTaken() throws IOException {
+			createFile("/" + CONFLICT_NAME, "taken");
+
+			assertEquals(sorted(CONFLICT_NAME, LONG_NAME), list("/"));
+			assertTrue(Files.exists(root.resolve(CONFLICT_NODE)));
+			assertEquals("taken", readFile("/" + CONFLICT_NAME));
+		}
+
+		@Test
+		@DisplayName("with conflict resolution disabled, conflicting copies are neither listed nor touched")
+		void testResolutionDisabled() throws IOException {
+			var passive = new ShorteningFileSystem(new NioVfsFileSystem(root), THRESHOLD, false);
+
+			try (var entries = passive.openDirectory("/")) {
+				var names = new ArrayList<String>();
+				entries.forEach(entry -> names.add(entry.name()));
+				assertEquals(List.of(LONG_NAME), names);
+			}
+			assertEquals(sorted(LONG_SIDECAR, LONG_NODE, CONFLICT_NODE), storedNames(root));
 		}
 	}
 }
