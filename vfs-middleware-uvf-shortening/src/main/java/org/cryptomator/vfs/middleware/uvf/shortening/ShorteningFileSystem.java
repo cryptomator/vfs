@@ -53,7 +53,7 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 	public static final int RECOMMENDED_THRESHOLD = 220;
 
 	/**
-	 * The maximum length in UTF-8 bytes of a name accepted from the upper layer, reported as {@link VfsMetadata#maxNameLength()}.
+	 * The maximum length in UTF-8 bytes of a name accepted from the upper layer, reported as {@link VfsMetadata#maxNameLength()} unless shortening is disabled.
 	 */
 	public static final int MAX_NAME_LENGTH = 1024;
 
@@ -106,6 +106,9 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 	@Override
 	public VfsMetadata readVfsMetadata(String path) throws IOException {
 		var stored = delegate.readVfsMetadata(storedPath(path));
+		if (shortener.threshold() == NameShortener.DISABLED) {
+			return stored; // names pass through unchanged, so the delegate's limit applies
+		}
 		return new VfsMetadata(stored.blockSize(), stored.totalBlocks(), stored.freeBlocks(), stored.availableBlocks(), Math.max(stored.maxNameLength(), MAX_NAME_LENGTH));
 	}
 

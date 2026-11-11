@@ -103,10 +103,13 @@ class ShorteningFileSystemTest {
 	}
 
 	@Test
-	@DisplayName("a disabled threshold passes all names through unchanged")
+	@DisplayName("a disabled threshold passes all names through unchanged and reports the delegate's name length limit")
 	void testDisabled() throws IOException {
-		var passThrough = new ShorteningFileSystem(new NioVfsFileSystem(root), NameShortener.DISABLED, true);
+		var delegate = new NioVfsFileSystem(root);
+		var passThrough = new ShorteningFileSystem(delegate, NameShortener.DISABLED, true);
 		Files.writeString(root.resolve(LONG_NODE), "x"); // no special meaning without shortening
+
+		assertEquals(delegate.readVfsMetadata("/").maxNameLength(), passThrough.readVfsMetadata("/").maxNameLength());
 
 		try (var file = passThrough.createFile("/" + LONG_NAME, Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), Set.of())) {
 			file.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)), 0);
