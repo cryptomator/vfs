@@ -43,4 +43,4 @@ Every operation on `/a/b/c/file` would otherwise read three `dir.uvf` files. `Di
 - Misses and failures are never cached.
 - The time to live bounds staleness caused by changes made to the ciphertext behind this process's back (e.g. a sync client). It cannot detect them; after a stale hit, operations on the vanished content directory fail with `NoSuchFileException` until the entry expires.
 
-Not supported yet: extended attributes, and name shortening (`name.c9s`), which UVF does not use.
+Not supported yet: extended attributes. Name shortening is the job of a separate middleware below this one, so every ciphertext name here is treated as unshortened (`VaultNode.name()` is the entry as stored and, for files, the contents file).

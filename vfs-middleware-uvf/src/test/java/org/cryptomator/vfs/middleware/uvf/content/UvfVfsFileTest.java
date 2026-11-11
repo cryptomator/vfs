@@ -1,5 +1,6 @@
 package org.cryptomator.vfs.middleware.uvf.content;
 
+import org.cryptomator.cryptolib.api.NameShortener;
 import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
 import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
@@ -34,7 +35,7 @@ class UvfVfsFileTest {
 	@BeforeEach
 	void setUp() {
 		var csprng = new SecureRandom();
-		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng));
+		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng), NameShortener.DISABLED);
 	}
 
 	@AfterEach
