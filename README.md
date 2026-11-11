@@ -20,7 +20,7 @@ Subprojects:
 - [`vfs-common`](vfs-common): shared code used by implementations
 - [`vfs-frontend-fuse`](vfs-frontend-fuse): frontend for FUSE-based access
 - [`vfs-frontend-webdav`](vfs-frontend-webdav): frontend for WebDAV-based access
-- [`vfs-middleware-shortening`](vfs-middleware-shortening): middleware that keeps stored file names short, according to the UVF file name shortening spec
-- [`vfs-middleware-crypto`](vfs-middleware-crypto): middleware for encrypting writes and decrypting reads
+- [`vfs-middleware-uvf-encryption`](vfs-middleware-uvf-encryption): middleware for encrypting writes and decrypting reads according to the Unified Vault Format
+- [`vfs-middleware-uvf-shortening`](vfs-middleware-uvf-shortening): middleware that keeps stored file names short, according to the UVF file name shortening spec
 - [`vfs-backend-nio`](vfs-backend-nio): backend for Java NIO-based storage
 - [`vfs-test`](vfs-test): executable wiring for manual end-to-end testing

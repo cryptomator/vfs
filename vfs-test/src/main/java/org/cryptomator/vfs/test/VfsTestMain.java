@@ -9,9 +9,9 @@ import org.cryptomator.jfuse.api.FuseMountFailedException;
 import org.cryptomator.vfs.api.VfsFileSystem;
 import org.cryptomator.vfs.backend.nio.NioVfsFileSystem;
 import org.cryptomator.vfs.frontend.fuse.FuseVfsOperations;
-import org.cryptomator.vfs.middleware.shortening.ShorteningFileSystem;
-import org.cryptomator.vfs.middleware.uvf.UvfFileSystem;
-import org.cryptomator.vfs.middleware.uvf.VaultUnlocker;
+import org.cryptomator.vfs.middleware.uvf.shortening.ShorteningFileSystem;
+import org.cryptomator.vfs.middleware.uvf.encryption.UvfFileSystem;
+import org.cryptomator.vfs.middleware.uvf.encryption.VaultUnlocker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

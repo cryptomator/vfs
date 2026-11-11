@@ -30,12 +30,12 @@
 		</dependency>
 		<dependency>
 			<groupId>org.cryptomator</groupId>
-			<artifactId>vfs-middleware-shortening</artifactId>
+			<artifactId>vfs-middleware-uvf-shortening</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>org.cryptomator</groupId>
-			<artifactId>vfs-middleware-uvf</artifactId>
+			<artifactId>vfs-middleware-uvf-encryption</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 		<dependency>

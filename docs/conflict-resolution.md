@@ -35,7 +35,7 @@ This couples all layers through callbacks in both directions. With resolution in
 
 ## Per layer
 
-### File name shortening (`vfs-middleware-shortening`)
+### File name shortening (`vfs-middleware-uvf-shortening`)
 
 Conflicts can affect both files of a shortened node. The sidecar is resolved first, because resolving a node needs the verified full name from its sidecar.
 
@@ -64,7 +64,7 @@ Notes:
 - A node renamed during a listing may or may not show up again in the same iteration; the listing reports it only once.
 - If normalization is impossible (read-only storage, failing rename, `N'` exceeding the maximum name length), the entry is skipped with a warning.
 
-### Encryption (`vfs-middleware-uvf`)
+### Encryption (`vfs-middleware-uvf-encryption`)
 
 UVF ciphertext names are unpadded base64url of variable length, so the end of the canonical name is not marked. A conflict copy is recognized by trial decryption:
 
