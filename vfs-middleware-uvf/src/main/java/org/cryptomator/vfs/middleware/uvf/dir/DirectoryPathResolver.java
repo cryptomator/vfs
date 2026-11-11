@@ -73,7 +73,7 @@ public final class DirectoryPathResolver {
 		 * @return the ciphertext path of the file holding the content, if the node is a regular file
 		 */
 		public String contentsPath() {
-			return contentDirPath(parent) + "/" + node.contentsFile();
+			return contentDirPath(parent) + "/" + node.name(); // never shortened, see README
 		}
 
 		/**
@@ -167,15 +167,15 @@ public final class DirectoryPathResolver {
 		var node = parent.encryptName(cleartextName);
 		var dirFilePath = contentDirPath(parent) + "/" + node.dirFile();
 		try {
-			return directories.get(dirFilePath, key -> load(node, cleartextName));
+			return directories.get(dirFilePath, key -> load(parent, node, cleartextName));
 		} catch (UncheckedIOException e) {
 			throw e.getCause();
 		}
 	}
 
-	private VaultDirectory load(VaultNode node, String cleartextName) {
+	private VaultDirectory load(VaultDirectory parent, VaultNode node, String cleartextName) {
 		try {
-			return node.directory(reader);
+			return parent.directory(node, reader);
 		} catch (AuthenticationFailedException e) {
 			throw new UncheckedIOException(new IOException("Directory metadata of " + cleartextName + " is unauthentic", e));
 		} catch (IOException e) {

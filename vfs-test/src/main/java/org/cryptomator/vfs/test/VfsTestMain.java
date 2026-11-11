@@ -1,5 +1,6 @@
 package org.cryptomator.vfs.test;
 
+import org.cryptomator.cryptolib.api.NameShortener;
 import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
 import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
@@ -88,7 +89,7 @@ public final class VfsTestMain {
 	// creates a password-protected vault with a throwaway recovery key, which is only logged, this is a test tool
 	private static UvfFileSystem initializeVault(VfsFileSystem delegate, String password, SecureRandom csprng) throws IOException {
 		var recoveryKeyPair = UvfRecoveryKey.generate(csprng);
-		var vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password(password), recoveryKeyPair);
+		var vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password(password), recoveryKeyPair, NameShortener.DISABLED);
 		var recoveryKey = Base64.getEncoder().encodeToString(recoveryKeyPair.privateKey().getEncoded());
 		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", recoveryKey);
 		return UvfFileSystem.initialize(delegate, vault);

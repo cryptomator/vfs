@@ -1,6 +1,7 @@
 package org.cryptomator.vfs.middleware.uvf.dir;
 
 import com.github.benmanes.caffeine.cache.Ticker;
+import org.cryptomator.cryptolib.api.NameShortener;
 import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
 import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
@@ -46,7 +47,7 @@ class DirectoryPathResolverTest {
 	@BeforeEach
 	void setUp() {
 		var csprng = new SecureRandom();
-		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng));
+		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng), NameShortener.DISABLED);
 		resolver = new DirectoryPathResolver(vault, reader);
 	}
 
@@ -57,7 +58,7 @@ class DirectoryPathResolverTest {
 
 	private VaultDirectory createDirectory(VaultDirectory parent, String name) throws IOException {
 		var child = vault.newDirectory();
-		parent.encryptName(name).createDirectory(child, writer);
+		parent.createDirectory(parent.encryptName(name), child, writer);
 		return child;
 	}
 

@@ -110,7 +110,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	 * Ownership of {@code vault} passes to the returned filesystem, which destroys it on {@link #close()}, also if initialization fails.
 	 *
 	 * @param delegate the underlying filesystem that will store the ciphertext
-	 * @param vault a freshly created vault from {@link UvfUnlockedVault#create(java.security.SecureRandom, org.cryptomator.cryptolib.api.UvfKeyEncryptionKey, org.cryptomator.cryptolib.api.UvfRecoveryKey)}
+	 * @param vault a freshly created vault from {@link UvfUnlockedVault#create(java.security.SecureRandom, org.cryptomator.cryptolib.api.UvfKeyEncryptionKey, org.cryptomator.cryptolib.api.UvfRecoveryKey, int)}
 	 * @return a ready-to-use UVF filesystem that must be closed to destroy its key material
 	 * @throws java.nio.file.FileAlreadyExistsException if the delegate already holds a {@code vault.uvf}
 	 * @throws IOException if the vault files cannot be written
@@ -172,7 +172,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 	// null for entries that are not vault nodes (e.g. the dir.uvf backup) or cannot be decrypted
 	private @Nullable VfsDirectoryEntry toCleartextEntry(VaultDirectory directory, VfsDirectoryEntry ciphertextEntry) {
 		try {
-			var cleartextName = directory.decryptName(ciphertextEntry.name(), reader);
+			var cleartextName = directory.decryptName(ciphertextEntry.name());
 			var resolved = new ResolvedPath(directory, directory.encryptName(cleartextName));
 			return new VfsDirectoryEntry(cleartextName, toCleartextMetadata(resolved, ciphertextEntry.metadata()));
 		} catch (IllegalArgumentException | AuthenticationFailedException _) {
@@ -366,7 +366,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 		if (metadataOrNull(resolved.entryPath()) != null) {
 			throw new FileAlreadyExistsException(path);
 		}
-		resolved.node().createSymlink(target, writer(DEFAULT_PERMISSIONS));
+		resolved.parent().createSymlink(resolved.node(), target, writer(DEFAULT_PERMISSIONS));
 	}
 
 	@Override
@@ -425,7 +425,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
 	private VaultDirectory directoryOf(ResolvedPath resolved) throws IOException {
 		try {
-			return resolved.node().directory(reader);
+			return resolved.parent().directory(resolved.node(), reader);
 		} catch (AuthenticationFailedException e) {
 			throw new IOException("Unauthentic directory metadata", e);
 		}
@@ -443,7 +443,7 @@ public final class UvfFileSystem implements VfsFileSystem, AutoCloseable {
 
 	private String symlinkTarget(ResolvedPath resolved) throws IOException {
 		try {
-			return resolved.node().symlinkTarget(reader);
+			return resolved.parent().symlinkTarget(resolved.node(), reader);
 		} catch (AuthenticationFailedException | IllegalArgumentException e) { // unauthentic or malformed symlink.uvf
 			throw new IOException("Invalid symbolic link", e);
 		}

@@ -1,5 +1,6 @@
 package org.cryptomator.vfs.middleware.uvf;
 
+import org.cryptomator.cryptolib.api.NameShortener;
 import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
 import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
@@ -48,7 +49,7 @@ class UvfFileSystemTest {
 	@BeforeEach
 	void setUp() throws IOException {
 		csprng = new SecureRandom();
-		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("correct horse"), UvfRecoveryKey.generate(csprng));
+		vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("correct horse"), UvfRecoveryKey.generate(csprng), NameShortener.DISABLED);
 		ciphertext = new InMemoryVfsFileSystem();
 		vault.rootDirectory().writeMetadataBackup(ciphertext::writeFile);
 		fs = new UvfFileSystem(ciphertext, vault);
@@ -583,7 +584,7 @@ class UvfFileSystemTest {
 	class Initialize {
 
 		private UvfUnlockedVault configuredVault() {
-			return UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng));
+			return UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password("pw"), UvfRecoveryKey.generate(csprng), NameShortener.DISABLED);
 		}
 
 		@Test
