@@ -30,7 +30,12 @@
 		</dependency>
 		<dependency>
 			<groupId>org.cryptomator</groupId>
-			<artifactId>vfs-middleware-uvf</artifactId>
+			<artifactId>vfs-middleware-uvf-shortening</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>org.cryptomator</groupId>
+			<artifactId>vfs-middleware-uvf-encryption</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 		<dependency>
@@ -54,6 +59,18 @@
 				<configuration>
 					<mainClass>org.cryptomator.vfs.test.VfsTestMain</mainClass>
 				</configuration>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<executions>
+					<execution>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 		</plugins>
 	</build>

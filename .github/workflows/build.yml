@@ -71,8 +71,8 @@ jobs:
           path: coverage/vfs-frontend-webdav
           if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
 
-  middleware-uvf:
-    name: Verify vfs-middleware-uvf
+  middleware-uvf-encryption:
+    name: Verify vfs-middleware-uvf-encryption
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -87,22 +87,48 @@ jobs:
           cache: 'maven'
       - name: Verify reactor
         run: >
-          ./mvnw -B clean verify --also-make --projects vfs-middleware-uvf --no-transfer-progress
+          ./mvnw -B clean verify --also-make --projects vfs-middleware-uvf-encryption --no-transfer-progress
       - name: Prepare coverage artifact
         run: |
-          mkdir -p coverage/vfs-middleware-uvf/vfs-api coverage/vfs-middleware-uvf/vfs-common coverage/vfs-middleware-uvf/vfs-middleware-uvf
-          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf/vfs-api/jacoco.xml
-          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf/vfs-common/jacoco.xml
-          test ! -f vfs-middleware-uvf/target/site/jacoco/jacoco.xml || cp vfs-middleware-uvf/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf/vfs-middleware-uvf/jacoco.xml
+          mkdir -p coverage/vfs-middleware-uvf-encryption/vfs-api coverage/vfs-middleware-uvf-encryption/vfs-common coverage/vfs-middleware-uvf-encryption/vfs-middleware-uvf-encryption
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf-encryption/vfs-api/jacoco.xml
+          test ! -f vfs-common/target/site/jacoco/jacoco.xml || cp vfs-common/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf-encryption/vfs-common/jacoco.xml
+          test ! -f vfs-middleware-uvf-encryption/target/site/jacoco/jacoco.xml || cp vfs-middleware-uvf-encryption/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf-encryption/vfs-middleware-uvf-encryption/jacoco.xml
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: coverage-vfs-middleware-uvf
-          path: coverage/vfs-middleware-uvf
+          name: coverage-vfs-middleware-uvf-encryption
+          path: coverage/vfs-middleware-uvf-encryption
+          if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
+
+  middleware-uvf-shortening:
+    name: Verify vfs-middleware-uvf-shortening
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DIST }}
+          cache: 'maven'
+      - name: Verify reactor
+        run: >
+          ./mvnw -B clean verify --also-make --projects vfs-middleware-uvf-shortening --no-transfer-progress
+      - name: Prepare coverage artifact
+        run: |
+          mkdir -p coverage/vfs-middleware-uvf-shortening/vfs-api coverage/vfs-middleware-uvf-shortening/vfs-middleware-uvf-shortening
+          test ! -f vfs-api/target/site/jacoco/jacoco.xml || cp vfs-api/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf-shortening/vfs-api/jacoco.xml
+          test ! -f vfs-middleware-uvf-shortening/target/site/jacoco/jacoco.xml || cp vfs-middleware-uvf-shortening/target/site/jacoco/jacoco.xml coverage/vfs-middleware-uvf-shortening/vfs-middleware-uvf-shortening/jacoco.xml
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-vfs-middleware-uvf-shortening
+          path: coverage/vfs-middleware-uvf-shortening
           if-no-files-found: ignore # modules without tests produce no report, the sonarcloud job tolerates a missing artifact
 
   sonarcloud:
     name: Run SonarCloud Analysis
-    needs: [frontend-fuse, frontend-webdav, middleware-uvf]
+    needs: [frontend-fuse, frontend-webdav, middleware-uvf-encryption, middleware-uvf-shortening]
     runs-on: ubuntu-latest
     permissions:
       contents: read

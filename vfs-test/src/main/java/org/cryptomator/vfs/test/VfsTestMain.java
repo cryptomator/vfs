@@ -1,6 +1,5 @@
 package org.cryptomator.vfs.test;
 
-import org.cryptomator.cryptolib.api.NameShortener;
 import org.cryptomator.cryptolib.api.UvfKeyEncryptionKey;
 import org.cryptomator.cryptolib.api.UvfRecoveryKey;
 import org.cryptomator.cryptolib.api.UvfUnlockedVault;
@@ -9,8 +8,9 @@ import org.cryptomator.jfuse.api.FuseMountFailedException;
 import org.cryptomator.vfs.api.VfsFileSystem;
 import org.cryptomator.vfs.backend.nio.NioVfsFileSystem;
 import org.cryptomator.vfs.frontend.fuse.FuseVfsOperations;
-import org.cryptomator.vfs.middleware.uvf.UvfFileSystem;
-import org.cryptomator.vfs.middleware.uvf.VaultUnlocker;
+import org.cryptomator.vfs.middleware.uvf.shortening.ShorteningFileSystem;
+import org.cryptomator.vfs.middleware.uvf.encryption.UvfFileSystem;
+import org.cryptomator.vfs.middleware.uvf.encryption.VaultUnlocker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 /**
- * Mounts an encrypted vault directory through the NIO backend, UVF middleware, and FUSE frontend.
+ * Mounts an encrypted vault directory through the NIO backend, file name shortening and UVF middleware, and FUSE frontend.
  */
 public final class VfsTestMain {
 
@@ -32,6 +32,7 @@ public final class VfsTestMain {
 	private static final String MOUNT_FLAGS_ENV = "VFS_MOUNT_FLAGS";
 	private static final String VAULT_CONFIG_FILE = "vault.uvf";
 	private static final String VAULT_DATA_DIR = "d";
+	private static final int NAME_SHORTENING_THRESHOLD = ShorteningFileSystem.RECOMMENDED_THRESHOLD;
 
 	public static void main(String[] args) throws Exception {
 		if (args.length < 2 || args.length > 3) {
@@ -52,6 +53,8 @@ public final class VfsTestMain {
 
 		var backend = new NioVfsFileSystem(vaultDir);
 		var ciphertextLoggingMiddleware = new LoggingVfsFileSystem("ciphertext", backend);
+		// the shortening layer sits below UVF and is built before vault.uvf can be read, so its threshold is fixed: new vaults get it, other vaults are refused
+		var shorteningMiddleware = new ShorteningFileSystem(ciphertextLoggingMiddleware, NAME_SHORTENING_THRESHOLD, true);
 		var password = readPassword();
 		var csprng = new SecureRandom(); // getInstanceStrong() may block on headless Linux, and the default is a CSPRNG as well
 		boolean createNewVault = Files.notExists(vaultDir.resolve(VAULT_CONFIG_FILE)) && Files.notExists(vaultDir.resolve(VAULT_DATA_DIR));
@@ -61,7 +64,7 @@ public final class VfsTestMain {
 			builder.setLibraryPath(libraryPath);
 		}
 
-		try (var uvfMiddleware = createNewVault ? initializeVault(ciphertextLoggingMiddleware, password, csprng) : UvfFileSystem.create(ciphertextLoggingMiddleware, VaultUnlocker.withPassword(password, csprng));
+		try (var uvfMiddleware = createNewVault ? initializeVault(shorteningMiddleware, password, csprng) : UvfFileSystem.create(shorteningMiddleware, requireShorteningThreshold(VaultUnlocker.withPassword(password, csprng)));
 			 var fuse = builder.build(new FuseVfsOperations(new LoggingVfsFileSystem("cleartext", uvfMiddleware), builder.errno()))) {
 			Runtime.getRuntime().addShutdownHook(new Thread(() -> closeQuietly(fuse), "vfs-test-shutdown"));
 			LOG.info("Mounting {} at {}", vaultDir, mountPoint);
@@ -83,10 +86,23 @@ public final class VfsTestMain {
 		LOG.info("The vault password is read from the {} environment variable or prompted on the console.", PASSWORD_ENV);
 	}
 
+	// refuses vaults whose names were shortened with a different threshold than the one of the shortening layer, as their long names would not map back
+	private static VaultUnlocker requireShorteningThreshold(VaultUnlocker unlocker) {
+		return lockedVault -> {
+			var vault = unlocker.unlock(lockedVault);
+			int threshold = vault.nameShorteningThreshold();
+			if (threshold != NAME_SHORTENING_THRESHOLD) {
+				vault.destroy();
+				throw new IOException("Unsupported nameShorteningThreshold " + threshold + ", only vaults with " + NAME_SHORTENING_THRESHOLD + " are supported");
+			}
+			return vault;
+		};
+	}
+
 	// creates a password-protected vault with a throwaway recovery key, which is only logged, this is a test tool
 	private static UvfFileSystem initializeVault(VfsFileSystem delegate, String password, SecureRandom csprng) throws IOException {
 		var recoveryKeyPair = UvfRecoveryKey.generate(csprng);
-		var vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password(password), recoveryKeyPair, NameShortener.DISABLED);
+		var vault = UvfUnlockedVault.create(csprng, UvfKeyEncryptionKey.password(password), recoveryKeyPair, NAME_SHORTENING_THRESHOLD);
 		var recoveryKey = Base64.getEncoder().encodeToString(recoveryKeyPair.privateKey().getEncoded());
 		LOG.warn("Creating a new vault. Recovery key (PKCS#8, base64, not stored anywhere else): {}", recoveryKey);
 		return UvfFileSystem.initialize(delegate, vault);

@@ -54,7 +54,7 @@
 		<!-- build-time dependencies -->
 		<central-publishing.version>0.12.0</central-publishing.version>
 		<jacoco.version>0.8.14</jacoco.version>
-		<junit-tree-reporter.version>1.4.0</junit-tree-reporter.version>
+		<surefire-tree-reporter.version>2.2.0</surefire-tree-reporter.version>
 		<mvn-clean.version>3.5.0</mvn-clean.version>
 		<mvn-compiler.version>3.14.1</mvn-compiler.version>
 		<mvn-dependency.version>3.9.0</mvn-dependency.version>
@@ -78,7 +78,8 @@
 		<module>vfs-backend-nio</module>
 		<module>vfs-frontend-fuse</module>
 		<module>vfs-frontend-webdav</module>
-		<module>vfs-middleware-uvf</module>
+		<module>vfs-middleware-uvf-encryption</module>
+		<module>vfs-middleware-uvf-shortening</module>
 		<module>vfs-test</module>
 	</modules>
 
@@ -208,11 +209,47 @@
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-surefire-plugin</artifactId>
 					<version>${mvn-surefire.version}</version>
+					<dependencies>
+						<dependency>
+							<groupId>me.fabriciorby</groupId>
+							<artifactId>maven-surefire-junit5-tree-reporter</artifactId>
+							<version>${surefire-tree-reporter.version}</version>
+						</dependency>
+					</dependencies>
+					<configuration>
+						<reportFormat>plain</reportFormat>
+						<consoleOutputReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5ConsoleOutputTreeReporter">
+							<disable>false</disable>
+						</consoleOutputReporter>
+						<statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter">
+							<theme>UNICODE</theme>
+							<githubStepSummary>true</githubStepSummary>
+						</statelessTestsetInfoReporter>
+					</configuration>
 				</plugin>
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-failsafe-plugin</artifactId>
 					<version>${mvn-failsafe.version}</version>
+					<dependencies>
+						<dependency>
+							<groupId>me.fabriciorby</groupId>
+							<artifactId>maven-surefire-junit5-tree-reporter</artifactId>
+							<version>${surefire-tree-reporter.version}</version>
+						</dependency>
+					</dependencies>
+					<configuration>
+						<reportFormat>plain</reportFormat>
+						<consoleOutputReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5ConsoleOutputTreeReporter">
+							<disable>false</disable>
+						</consoleOutputReporter>
+						<statelessTestsetInfoReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5StatelessTestsetInfoTreeReporter">
+							<theme>UNICODE</theme>
+							<githubStepSummary>true</githubStepSummary>
+							<hideSuccessfulParameterizedRuns>true</hideSuccessfulParameterizedRuns>
+							<printTestCounts>true</printTestCounts>
+						</statelessTestsetInfoReporter>
+					</configuration>
 				</plugin>
 				<plugin>
 					<groupId>org.sonatype.central</groupId>
