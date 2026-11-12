@@ -43,4 +43,8 @@ Every operation on `/a/b/c/file` would otherwise read three `dir.uvf` files. `Di
 - Misses and failures are never cached.
 - The time to live bounds staleness caused by changes made to the ciphertext behind this process's back (e.g. a sync client). It cannot detect them; after a stale hit, operations on the vanished content directory fail with `NoSuchFileException` until the entry expires.
 
+## Requirements on the delegate
+
+The delegate must be **case-preserving**: listings must return names exactly as they were created, because ciphertext names are base64url, where case carries information. It does not need to be case-sensitive: ciphertext names within a directory are pseudorandom, so two of them differing only in case occur with negligible probability, and lookups by the exact name work on case-insensitive storage as well. All stored names are ASCII, so the delegate's Unicode normalization does not matter.
+
 Not supported yet: extended attributes. Long ciphertext names are not shortened here; layer [`vfs-middleware-uvf-shortening`](../vfs-middleware-uvf-shortening) between this middleware and the backend if the storage limits name lengths.
