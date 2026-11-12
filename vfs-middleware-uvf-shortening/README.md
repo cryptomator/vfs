@@ -36,6 +36,7 @@ Conflict resolution is enabled by the constructor flag `resolveConflicts` and fo
 - **Recognition.** `ConflictName` strips a suffix that starts with a character other than an ASCII letter or digit before the last extension, and cryptolib decides whether the remainder is a shortened name or sidecar.
 - **Sidecar copies** (`{hash}.original (x).uvf`) are always hidden. If the regular sidecar is missing or invalid, a valid copy replaces it; if none is valid, the node is skipped and nothing is deleted.
 - **Node copies** (`{hash}.shortened (x).uvf`) of a node with full name `N` are renamed to the regular shortened node of `N'` (`N` with the suffix inserted before its extension), after writing the sidecar of `N'`. The upper layer then sees `N'` like a conflict on an unshortened name. The sidecar of `N` stays with the original. If `N'` is taken, exceeds `MAX_NAME_LENGTH`, or the storage refuses the rename, the copy is skipped.
-- **Shared sidecars.** Deleting or renaming away a long-named node keeps its sidecar while the directory still holds a conflicting copy of the node, which costs one directory listing per such operation.
+- **Shared sidecars.** Deleting or renaming away a long-named node deletes its sidecar without looking for conflicting copies: every delete or rename is assumed to follow a listing of the directory, which has already resolved them. A copy that a sync service delivers after that listing loses its name (residual risk).
+- **Cache.** The sidecar cache only spares reads; it never causes writes. Restoring sidecars and resolving conflicting copies rely on what is currently stored.
 
 With `resolveConflicts` disabled, listings never write: conflicting copies of shortened nodes are not listed, and broken sidecars are not restored.

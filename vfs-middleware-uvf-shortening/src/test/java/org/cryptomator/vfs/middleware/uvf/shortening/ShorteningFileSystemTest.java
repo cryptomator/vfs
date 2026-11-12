@@ -407,12 +407,25 @@ class ShorteningFileSystemTest {
 		}
 
 		@Test
-		@DisplayName("deleting the original keeps its sidecar while an unresolved conflicting copy still needs it")
-		void testDeleteOriginalKeepsSharedSidecar() throws IOException {
+		@DisplayName("deleting the original deletes its sidecar, assuming a preceding listing resolved all copies; an unresolved copy is then lost")
+		void testDeleteOriginalWithoutPrecedingListing() throws IOException {
 			fs.deleteFile("/" + LONG_NAME);
 
-			assertEquals(sorted(LONG_SIDECAR, CONFLICT_NODE), storedNames(root));
+			assertEquals(List.of(CONFLICT_NODE), storedNames(root));
+			assertEquals(List.of(), list("/"));
+			assertEquals(List.of(CONFLICT_NODE), storedNames(root));
+		}
+
+		@Test
+		@DisplayName("a cached name is never used to resolve a copy whose shared sidecar is gone from storage")
+		void testCacheDoesNotResolveCopies() throws IOException {
+			list("/"); // resolves the first copy and caches the original's name
+			var lateCopy = LONG_HASH + ".shortened (2).uvf";
+			Files.writeString(root.resolve(lateCopy), "late");
+			fs.deleteFile("/" + LONG_NAME);
+
 			assertEquals(List.of(CONFLICT_NAME), list("/"));
+			assertEquals(sorted(storedSidecar(CONFLICT_NAME), storedNode(CONFLICT_NAME), lateCopy), storedNames(root));
 		}
 
 		@Test

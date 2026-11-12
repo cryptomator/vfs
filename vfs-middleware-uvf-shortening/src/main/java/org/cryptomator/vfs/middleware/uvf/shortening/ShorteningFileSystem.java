@@ -185,8 +185,13 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 			LOG.info("Skipping conflicting copy {}, conflict resolution is disabled", copyPath);
 			return null;
 		}
-		var originalName = verifiedName(storedDir, conflict.canonicalName());
+		// the new sidecar is derived from the stored one, never from the cache: a cached name says nothing about whether its sidecar still exists
+		var originalName = loadSidecar(storedDir, conflict.canonicalName());
 		if (originalName == null) {
+			originalName = restoreSidecar(storedDir, conflict.canonicalName());
+		}
+		if (originalName == null) {
+			LOG.warn("Skipping conflicting copy {}, the sidecar it shares with {} is missing or invalid", copyPath, join(storedDir, conflict.canonicalName()));
 			return null;
 		}
 		var name = conflict.applyTo(originalName);
@@ -386,16 +391,15 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		try {
 			writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW), shortened.sidecarContents());
 		} catch (FileAlreadyExistsException _) {
-			if (readSidecar(node.parentPath(), shortened.shortenedName()) == null) {
+			if (loadSidecar(node.parentPath(), shortened.shortenedName()) == null) {
 				writeAll(node.sidecarPath(), Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING), shortened.sidecarContents());
 			}
 		}
 	}
 
-	// deleted after the node; an orphaned sidecar is harmless, whereas deleting one that a conflicting copy of the node still needs is not
+	// deleted after the node; conflicting copies sharing the sidecar are resolved by the listing that precedes every delete or rename, so it belongs to this node alone
 	private void deleteSidecar(StoredNode node) throws IOException {
-		var shortened = node.shortened();
-		if (shortened == null || !conflictingCopies(node.parentPath(), shortened.shortenedName()::equals).isEmpty()) {
+		if (node.shortened() == null) {
 			return;
 		}
 		try {
@@ -405,12 +409,14 @@ public final class ShorteningFileSystem implements VfsFileSystem {
 		}
 	}
 
-	// the verified full name, or null if the sidecar is missing or invalid
+	// the verified full name, preferably from the cache, or null if the sidecar is missing or invalid; reading the cache never causes writes
 	private @Nullable String readSidecar(String storedDir, String shortenedName) throws IOException {
 		var cached = sidecarCache.get(shortenedName);
-		if (cached != null) {
-			return cached;
-		}
+		return cached != null ? cached : loadSidecar(storedDir, shortenedName);
+	}
+
+	// the verified full name as currently stored, bypassing the cache; every decision that writes to the delegate relies on this
+	private @Nullable String loadSidecar(String storedDir, String shortenedName) throws IOException {
 		byte[] contents;
 		try {
 			contents = readAtMost(join(storedDir, shortener.sidecarFile(shortenedName)), MAX_NAME_LENGTH + 1);

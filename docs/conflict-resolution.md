@@ -63,6 +63,8 @@ Notes:
 - Resolution happens on demand while listing a directory, per hash. Only if the canonical sidecar is missing or invalid is the directory scanned for sidecar copies.
 - A node renamed during a listing may or may not show up again in the same iteration; the listing reports it only once.
 - If normalization is impossible (read-only storage, failing rename, `N'` exceeding the maximum name length), the entry is skipped with a warning.
+- Deleting or renaming away a shortened node deletes its sidecar without looking for copies, assuming that every delete or rename follows a listing of the directory that has already resolved them. A copy delivered by a sync service after that listing therefore loses the shared sidecar and is skipped from then on. This residual risk is accepted, as is the related one from the spec: a node restored by a sync service after a concurrent delete returns without its sidecar.
+- The cache of verified names only spares reads and never causes writes: resolution and repairs rely on the sidecars as currently stored, as a cached name says nothing about whether its sidecar still exists.
 
 ### Encryption (`vfs-middleware-uvf-encryption`)
 
